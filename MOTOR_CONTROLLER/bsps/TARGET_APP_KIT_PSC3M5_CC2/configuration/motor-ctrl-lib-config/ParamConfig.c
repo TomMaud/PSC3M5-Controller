@@ -71,6 +71,14 @@ void PARAMS_Init(MOTOR_t *motor_ptr)
 
   
 }
+
+void PARAMS_SetCommandSource(MOTOR_t *motor_ptr, CMD_SOURCE_t source)
+{
+    if ((source == Internal) || (source == External))
+    {
+        motor_ptr->params_ptr->sys.cmd.source = source;
+    }
+}
 void PARAMS_InitManual(PARAMS_t* params_ptr)
 {
 
@@ -188,7 +196,8 @@ void PARAMS_InitManual(PARAMS_t* params_ptr)
     
 
     // Command Parameters:
-    params_ptr->sys.cmd.source = MOTOR_CTRL_COMMAND_SOURCE;
+
+	params_ptr->sys.cmd.source = Internal;
     params_ptr->sys.cmd.w_max.mech = HZ_TO_RADSEC(RPM_TO_HZ(MOTOR_CTRL_COMMAND_MAX_SPEED)); //[Ra/sec-elec]
 #if defined(CTRL_METHOD_RFO) || defined(CTRL_METHOD_TBC)
     params_ptr->sys.cmd.i_max = MOTOR_CTRL_COMMAND_MAX_CURRENT; // [A]

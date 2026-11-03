@@ -713,12 +713,7 @@ void MCU_RunISR1(void)
     PgOut_UpdateState();
 #endif
 
-    // SW fault LED
-#if defined(N_FAULT_LED_SW_PORT) // seperate leds for hw and sw faults
-    Cy_GPIO_Write(N_FAULT_LED_SW_PORT, N_FAULT_LED_SW_NUM, (bool)(!motor[0].faults_ptr->flags_latched.sw.reg));
-#elif defined(FAULT_LED_ALL_PORT) // one led for all faults
-    Cy_GPIO_Write(FAULT_LED_ALL_PORT, FAULT_LED_ALL_NUM, (bool)(motor[0].faults_ptr->flags_latched.all));
-#endif
+
 #if (DRIVE_ENABLE_CONTROL_POT)
     DriveEnableControlforPot(&motor[0]);  // Update drive enable/disable based on potentiometer command (Motor 0)
 #endif

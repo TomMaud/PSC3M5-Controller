@@ -37,7 +37,7 @@
 
 
 /*Parameter Configuration for Motor 0*/
-#define PARAMS_ALWAYS_OVERWRITE     (false)     // For testing only. Using this will ensure that parameters are always overwritten.
+#define PARAMS_ALWAYS_OVERWRITE     (true)     // For testing only. Using this will ensure that parameters are always overwritten.
 /*******************************************************************************/
 /******************Parameter Configuration for Motor 0**************************/
 /*******************************************************************************/
@@ -122,7 +122,6 @@
 #define MOTOR_OFFSET_CURR_MIN                      (1.485f)                     /*[V], minimum voltage offset*/
 #define MOTOR_OFFSET_CURR_MAX                      (1.815f)                     /*[V], maximum voltage offset*/
 /*********Command*********/
-#define MOTOR_CTRL_COMMAND_SOURCE                  (Internal)                   /*Internal= 0(From potentiometer), External =1(From GUI, UART, etc.)*/
 
 #define MOTOR_CTRL_COMMAND_MAX_SPEED               (MOTOR_NORM_SPEED)           /*[RPM], maximum speed command*/
 #if defined(CTRL_METHOD_RFO) || defined(CTRL_METHOD_TBC)
@@ -278,7 +277,7 @@
 #define MOTOR_CURRENT_CONT                         (3.50f)                     /*[A],  continuous current rating*/
 #define MOTOR_ID_MAX                               (1.75f)                     /*[A], maximum d-axis current*/
 #define MOTOR_VOLTAGE                              (24.0f)                     /*[V], motor voltage*/
-#define MOTOR_NORM_SPEED                           (4000.0f)                   /*[RPM], nominal speed*/
+#define MOTOR_NORM_SPEED                           (6000.0f)                   /*[RPM], nominal speed*/
 #define MOTOR_MAX_SPEED                            (6000.0f)                   /*[RPM],  maximum no load speed*/
 #if defined(CTRL_METHOD_SFO)
 #define MOTOR_MTPV_TORQUE_MARGIN                   (90.0f)                     /*[%],  MTPV torque margin*/
@@ -307,4 +306,4 @@
 #define MECH_FRICTION                             (6.0E-3f)                    /*[kg.m^2/sec^2], Frittion*/
 
 /*******************************************************************************/
-
+void PARAMS_SetCommandSource(MOTOR_t *motor_ptr, CMD_SOURCE_t source);
