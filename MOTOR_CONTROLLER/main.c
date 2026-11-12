@@ -93,14 +93,19 @@ static volatile bool wake_from_sleep = false;
 
 static void sleep_button_isr(void)
 {
-    /* Clear the SW2 pin interrupt */
     Cy_GPIO_ClearInterrupt(
         CYBSP_USER_BTN_PORT,
         CYBSP_USER_BTN_PIN
     );
 
-    /* Tell the main code that SW2 woke the MCU */
-    wake_from_sleep = true;
+    if (sleeping)
+    {
+        wake_from_sleep = true;
+    }
+    else
+    {
+        sleep_button_pressed = true;
+    }
 }
 
 static void sleep_button_init(void)
@@ -210,14 +215,18 @@ static void M1_Hall_GPIO_Init(void);
 
 static void enter_deep_sleep(void)
 {
-	
     cy_en_syspm_status_t status;
 
+    /* Disable motor */
     motor_drive_set(false);
+
+    /* Mark MCU as sleeping */
+    sleeping = true;
 
     sleep_button_pressed = false;
     wake_from_sleep = false;
 
+    /* Clear pending button interrupt */
     Cy_GPIO_ClearInterrupt(
         CYBSP_USER_BTN_PORT,
         CYBSP_USER_BTN_PIN
@@ -228,29 +237,34 @@ static void enter_deep_sleep(void)
 
     __enable_irq();
 
+    /* Configure Deep Sleep */
     Cy_SysPm_SetDeepSleepMode(CY_SYSPM_MODE_DEEPSLEEP);
 
     printf("[Sleep] Entering Deep Sleep\r\n");
     fflush(stdout);
 
-    /* 1. Enter Deep Sleep */
+    /* Enter Deep Sleep */
     status = Cy_SysPm_CpuEnterDeepSleep(
         CY_SYSPM_WAIT_FOR_INTERRUPT
     );
 
-    /* 2. Execution resumes here after wake-up */
+    /* Execution resumes after wake-up */
 
     if (status != CY_SYSPM_SUCCESS)
     {
+        sleeping = false;
+        printf("[Sleep] Deep Sleep entry failed: %d\r\n", status);
         return;
     }
 
-    printf("[Wake] SW2 wake-up detected\r\n");
+    sleeping = false;
 
-    /* 3. Restore UART */
+    printf("[Wake] MCU waking up\r\n");
+
+    /* Restore UART */
     debug_uart_init();
 
-    /* 4. Restore SysTick */
+    /* Restore SysTick */
     Cy_SysTick_Init(
         CY_SYSTICK_CLOCK_SOURCE_CLK_CPU,
         SystemCoreClock / 1000UL
@@ -258,7 +272,7 @@ static void enter_deep_sleep(void)
 
     Cy_SysTick_SetCallback(0U, systick_handler);
 
-    /* 5. Reset timing and sleep flags */
+    /* Reset timing */
     sys_millis = 0U;
     sleep_pending = false;
     sleep_stop_time = 0U;
@@ -266,12 +280,13 @@ static void enter_deep_sleep(void)
     sleep_button_pressed = false;
     wake_from_sleep = false;
 
-    /* 6. Keep motor disabled */
+    /* Keep motor disabled */
     motor_drive_set(false);
 
     printf("[Wake] UART and SysTick restored\r\n");
     fflush(stdout);
 }
+
 
 static void RTC_Init_Time(void)
 {
@@ -1145,6 +1160,7 @@ __enable_irq();
 	/* Detect a button press */
 if (sleep_button_pressed)
 {
+	printf("Button press");
     sleep_button_pressed = false;
 
     if (!sleep_pending)
@@ -1177,8 +1193,21 @@ if (sleep_pending)
         {
             motor_drive_set(false);
 
-            printf("[Sleep] Motor stopped. Entering Deep Sleep\r\n");
-            fflush(stdout);
+            static const char sleep_message[] = "SLEEP:\n";
+
+			printf("[Sleep] Sending request to Pico W\r\n");
+			fflush(stdout);
+			
+			/* Send directly through the UART connected to the Pico */
+			Cy_SCB_UART_PutString(DEBUG_UART_HW, sleep_message);
+			
+			/* Wait until the final byte has physically left the UART */
+			while (!Cy_SCB_UART_IsTxComplete(DEBUG_UART_HW))
+			{
+			}
+			
+			printf("[Sleep] Request transmitted\r\n");
+			fflush(stdout);
 
             sleep_pending = false;
             sleep_stop_time = 0U;

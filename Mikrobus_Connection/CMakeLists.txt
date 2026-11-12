@@ -58,6 +58,7 @@ target_include_directories(Mikrobus_Connection PRIVATE
 target_link_libraries(Mikrobus_Connection
         pico_stdlib
         pico_multicore
+        pico_low_power
         hardware_uart
         hardware_spi
         hardware_gpio

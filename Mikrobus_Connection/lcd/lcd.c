@@ -383,6 +383,17 @@ void lcd_init(void)
 }
 
 
+void lcd_deinit(void)
+{
+    lcd_fill(BLACK);
+
+    gpio_put(PIN_BL, 0);
+
+    gpio_put(PIN_CS, 1);
+
+    spi_deinit(spi0);
+}
+
 void lcd_draw_dashboard(
     float rpm,
     float requested_rpm,  // NEW

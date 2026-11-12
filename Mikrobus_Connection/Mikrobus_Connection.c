@@ -9,9 +9,11 @@
 #include "pico/util/queue.h"
 #include "pico/sync.h"
 #include "pico/cyw43_arch.h"
+#include "pico/low_power.h"
 
 #include "hardware/uart.h"
 #include "hardware/irq.h"
+#include "hardware/gpio.h"
 
 #include "lwip/ip_addr.h"
 #include "lwip/ip4_addr.h"
@@ -46,6 +48,8 @@
 
 #define RPM_LIMIT             6000
 
+static dhcp_server_t dhcp_server = {0};
+static dns_server_t dns_server = {0};
 
 /* =========================================================
    SHARED TYPES (core 0 <-> core 1)
@@ -102,6 +106,181 @@ static volatile uint16_t rx_head = 0;      /* written by IRQ */
 static volatile uint16_t rx_tail = 0;      /* written by main loop on core 1 */
 static volatile uint32_t rx_overflows = 0;
 
+static volatile bool sleep_requested = false;
+static volatile bool core1_sleep_ready = false;
+static volatile bool resume_core1 = false;
+
+static void stop_wifi_services(void)
+{
+    printf("[POWER] Stopping Wi-Fi services\n");
+
+    webpage_stop_http_servers();
+
+    dns_server_deinit(&dns_server);
+    dhcp_server_deinit(&dhcp_server);
+
+    cyw43_arch_deinit();
+
+    printf("[POWER] Wi-Fi services stopped\n");
+}
+
+static void uart_rx_isr(void);
+
+
+static void uart_link_restore(void)
+{
+    uart_init(UART_ID, UART_BAUD);
+
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_hw_flow(UART_ID, false, false);
+    uart_set_fifo_enabled(UART_ID, true);
+
+    irq_set_enabled(UART_IRQ, true);
+    uart_set_irq_enables(UART_ID, true, false);
+}
+
+static void uart_link_init(void)
+{
+    uart_init(UART_ID, UART_BAUD);
+
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_hw_flow(UART_ID, false, false);
+    uart_set_fifo_enabled(UART_ID, true);
+
+    /* Register the handler once on Core 1. */
+    irq_set_exclusive_handler(UART_IRQ, uart_rx_isr);
+    irq_set_enabled(UART_IRQ, true);
+
+    uart_set_irq_enables(UART_ID, true, false);
+}
+
+static bool restore_wifi_after_wake(void)
+{
+    printf("[WAKE] Restoring Wi-Fi system\n");
+
+    /* 1. Initialise CYW43 and lwIP. */
+    if (cyw43_arch_init())
+    {
+        printf("[WAKE] ERROR: CYW43 initialisation failed\n");
+        return false;
+    }
+
+    /* 2. Re-enable the access point. */
+    cyw43_arch_enable_ap_mode(
+        AP_SSID,
+        AP_PASSWORD,
+        CYW43_AUTH_WPA2_AES_PSK
+    );
+
+    /* 3. Configure the AP network address. */
+    ip_addr_t gw;
+    ip_addr_t mask;
+
+    IP4_ADDR(ip_2_ip4(&gw), 192, 168, 4, 1);
+    IP4_ADDR(ip_2_ip4(&mask), 255, 255, 255, 0);
+
+    /* 4. Obtain the AP network interface. */
+    struct netif *ap_netif = &cyw43_state.netif[CYW43_ITF_AP];
+
+    /* 5. Restart DHCP. */
+    dhcp_server_init(
+        &dhcp_server,
+        ap_netif,
+        &gw,
+        &mask
+    );
+
+    /* 6. Restart DNS. */
+    dns_server_init(
+        &dns_server,
+        ap_netif,
+        &gw
+    );
+
+    /* 7. Restart HTTP. */
+    if (!webpage_start_http_servers())
+    {
+        printf("[WAKE] ERROR: HTTP server failed to start\n");
+
+        /* Clean up the services that were successfully started. */
+        dns_server_deinit(&dns_server);
+        dhcp_server_deinit(&dhcp_server);
+        cyw43_arch_deinit();
+
+        return false;
+    }
+
+    printf("[WAKE] Wi-Fi access point restored\n");
+    printf("[WAKE] SSID: %s\n", AP_SSID);
+    printf("[WAKE] Address: http://192.168.4.1\n");
+
+    return true;
+}
+
+static void release_core1_after_wake(void)
+{
+    printf("[WAKE] Releasing Core 1\n");
+
+    resume_core1 = true;
+    __sev();
+}
+
+static void enter_and_restore_dormant(void)
+{
+    printf("[POWER] Waiting for Core 1 to park\n");
+
+    while (!core1_sleep_ready)
+    {
+        tight_loop_contents();
+    }
+
+    __dmb();
+
+    printf("[POWER] Core 1 parked; shutting down Wi-Fi\n");
+
+    /* Stop HTTP, DNS, DHCP and CYW43 cleanly. */
+    stop_wifi_services();
+
+    /* Configure GP1 as the dormant wake input. */
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(UART_RX_PIN, GPIO_IN);
+    gpio_pull_up(UART_RX_PIN);
+    lcd_deinit();
+
+    printf("[POWER] Entering Dormant; waiting for PSoC UART\n");
+
+    int result = low_power_dormant_until_gpio_pin_state(
+        UART_RX_PIN,
+        true,
+        false,
+        DORMANT_CLOCK_SOURCE_ROSC,
+        NULL
+    );
+
+    printf("[WAKE] Dormant returned, result = %d\n", result);
+
+    /* Restore Wi-Fi. */
+    bool wifi_restored = restore_wifi_after_wake();
+
+    if (!wifi_restored)
+    {
+        printf("[WAKE] WARNING: Wi-Fi restoration failed\n");
+    }
+
+    /* Release Core 1 regardless of Wi-Fi restoration outcome. */
+    sleep_requested = false;
+    __dmb();
+
+    release_core1_after_wake();
+}
+
+
 static void uart_rx_isr(void)
 {
     while (uart_is_readable(UART_ID))
@@ -131,29 +310,8 @@ static bool rx_ring_pop(uint8_t *c)
     return true;
 }
 
-static void uart_link_init(void)
-{
-    uart_init(UART_ID, UART_BAUD);
-
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-
-    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
-    uart_set_hw_flow(UART_ID, false, false);
-    uart_set_fifo_enabled(UART_ID, true);
-
-    /* Registered from core 1, so the IRQ is serviced by core 1 */
-    irq_set_exclusive_handler(UART_IRQ, uart_rx_isr);
-    irq_set_enabled(UART_IRQ, true);
-    uart_set_irq_enables(UART_ID, true, false);   /* RX interrupt only */
-}
-
 /* =========================================================
    CORE 1: SEND COMMANDS TO THE PSC3M5
-   ---------------------------------------------------------
-   !!! PLACEHOLDER PROTOCOL !!!
-   Change these strings to whatever the PSC3M5 firmware
-   actually expects.
    ========================================================= */
 
 static void send_command_to_infineon(const motor_cmd_t *cmd)
@@ -254,6 +412,12 @@ static void core1_main(void)
                 if (index > 0)
                 {
                     line[index] = '\0';
+                    printf(line);
+
+                    if (strncmp(line, "SLEEP:", 6) == 0){
+                        printf("Received sleep message: %s\n", line);
+                        sleep_requested = true;
+                    }
 
                     if (strncmp(line, "TIME:", 5) == 0)
 {
@@ -347,8 +511,65 @@ else
             last_draw = to_ms_since_boot(get_absolute_time());
             dirty = false;
         }
+        /* ---- Enter sleep only when requested ---- */
+if (sleep_requested)
+{
+    printf("[POWER] Core 1 preparing to sleep\n");
+    uart_puts(UART_ID, "SLEEP_OK\n");
+    uart_tx_wait_blocking(UART_ID);
 
-        sleep_us(500);
+    /* 2. Stop UART interrupts. */
+    uart_set_irq_enables(UART_ID, false, false);
+    irq_set_enabled(UART_IRQ, false);
+
+    /* 3. Ensure all transmitted data has left the UART. */
+    uart_tx_wait_blocking(UART_ID);
+
+    /* 4. Shut down UART0. */
+    uart_deinit(UART_ID);
+
+
+    /* Tell Core 0 that Core 1 is ready to park. */
+    core1_sleep_ready = true;
+    __dmb();
+    __sev();
+
+    /* Park Core 1 until Core 0 releases it after wake. */
+    while (!resume_core1)
+    {
+        __wfe();
+    }
+
+    __dmb();
+
+    /* Core 0 has restored the chip clocks and Wi-Fi. */
+    printf("[WAKE] Core 1 restoring UART and LCD\n");
+
+    /* Reset the receive buffer to discard incomplete wake bytes. */
+    rx_head = 0;
+    rx_tail = 0;
+    index = 0;
+
+    uart_link_restore();
+
+    lcd_init();
+
+    /* Reset communication timing. */
+    last_heartbeat = to_ms_since_boot(get_absolute_time());
+    last_telemetry = 0;
+
+    t.connected = false;
+    dirty = true;
+
+    /* Clear handshake flags for the next sleep cycle. */
+    resume_core1 = false;
+    core1_sleep_ready = false;
+    sleep_requested = false;
+
+    __dmb();
+
+    printf("[WAKE] Core 1 resumed\n");
+}
     }
 }
 
@@ -539,8 +760,7 @@ bool handle_request(const char *request, char *response, size_t response_size)
    CORE 0 MAIN
    ========================================================= */
 
-static dhcp_server_t dhcp_server;
-static dns_server_t  dns_server;
+
 
 int main(void)
 {
@@ -585,10 +805,16 @@ multicore_launch_core1(core1_main);
     printf("AP \"%s\" up - browse to http://192.168.4.1\n", AP_SSID);
 
     while (true)
+{
+    cyw43_arch_poll();
+
+    if (sleep_requested)
     {
-        cyw43_arch_poll();
-        sleep_ms(1);
+        enter_and_restore_dormant();
     }
+
+    sleep_ms(1);
+}
 
     return 0;
 }

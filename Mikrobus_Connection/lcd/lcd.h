@@ -18,6 +18,6 @@ void lcd_draw_dashboard(
     uint32_t faults,
     bool connected);
 
-
+void lcd_deinit(void);
 
 #endif // LCD_H
