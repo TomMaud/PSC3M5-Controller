@@ -526,9 +526,9 @@ void MCU_RunISR0(void)
 #if defined(HALL_0_PORT) && defined(HALL_1_PORT) && defined(HALL_2_PORT)
     if(motor[0].params_ptr->sys.fb.mode == Hall)
     {
-        motor[0].hall_ptr->signal.u = !Cy_GPIO_Read(HALL_0_PORT, HALL_0_NUM);
-        motor[0].hall_ptr->signal.v = !Cy_GPIO_Read(HALL_1_PORT, HALL_1_NUM);
-        motor[0].hall_ptr->signal.w = !Cy_GPIO_Read(HALL_2_PORT, HALL_2_NUM);
+        motor[0].hall_ptr->signal.u = !Cy_GPIO_Read(GPIO_PRT3, 0U);
+motor[0].hall_ptr->signal.v = !Cy_GPIO_Read(GPIO_PRT3, 1U);
+motor[0].hall_ptr->signal.w = !Cy_GPIO_Read(GPIO_PRT3, 2U);
 
     // SW capture (w/o POSIF)
     static bool hall_cap_sig, hall_cap_sig_prev = false;

@@ -417,7 +417,7 @@
                 <Personality template="pin" version="4.0" instance="jcrNH4Zfu3Y">
                     <Block location="ioss[0].port[3].pin[0]" locked="true"/>
                     <Parameters>
-                        <Param id="DriveModes" value="CY_GPIO_DM_ANALOG"/>
+                        <Param id="DriveModes" value="CY_GPIO_DM_HIGHZ"/>
                         <Param id="driveStrength" value="CY_GPIO_DRIVE_1_2"/>
                         <Param id="driveStrengthTrim" value="CY_GPIO_DRIVE_STRENGTH_DEFAULT"/>
                         <Param id="inFlash" value="true"/>
@@ -433,7 +433,7 @@
                 <Personality template="pin" version="4.0" instance="iOfSRHRHrac">
                     <Block location="ioss[0].port[3].pin[1]" locked="true"/>
                     <Parameters>
-                        <Param id="DriveModes" value="CY_GPIO_DM_ANALOG"/>
+                        <Param id="DriveModes" value="CY_GPIO_DM_HIGHZ"/>
                         <Param id="driveStrength" value="CY_GPIO_DRIVE_1_2"/>
                         <Param id="driveStrengthTrim" value="CY_GPIO_DRIVE_STRENGTH_DEFAULT"/>
                         <Param id="inFlash" value="true"/>
@@ -449,7 +449,7 @@
                 <Personality template="pin" version="4.0" instance="sTfIf3LU4MM">
                     <Block location="ioss[0].port[3].pin[2]" locked="true"/>
                     <Parameters>
-                        <Param id="DriveModes" value="CY_GPIO_DM_ANALOG"/>
+                        <Param id="DriveModes" value="CY_GPIO_DM_HIGHZ"/>
                         <Param id="driveStrength" value="CY_GPIO_DRIVE_1_2"/>
                         <Param id="driveStrengthTrim" value="CY_GPIO_DRIVE_STRENGTH_DEFAULT"/>
                         <Param id="inFlash" value="true"/>
@@ -1424,6 +1424,33 @@
                         <Param id="vdddMv" value="3300"/>
                         <Param id="vddio0Mv" value="3300"/>
                         <Param id="vddio1Mv" value="3300"/>
+                    </Parameters>
+                </Personality>
+                <Personality template="rtc" version="3.0" instance="KK-_peyGD0M">
+                    <Block location="srss[0].rtc[0]" locked="true"/>
+                    <Parameters>
+                        <Param id="amPmPeriodOfDay" value="CY_RTC_AM"/>
+                        <Param id="dayOfTheMonth" value="1"/>
+                        <Param id="dst" value="false"/>
+                        <Param id="dstFormat" value="CY_RTC_DST_RELATIVE"/>
+                        <Param id="dstStartDay" value="22"/>
+                        <Param id="dstStartDayOfWeek" value="CY_RTC_SUNDAY"/>
+                        <Param id="dstStartHour" value="0"/>
+                        <Param id="dstStartMonth" value="CY_RTC_MARCH"/>
+                        <Param id="dstStartWeek" value="CY_RTC_LAST_WEEK_OF_MONTH"/>
+                        <Param id="dstStopDay" value="22"/>
+                        <Param id="dstStopDayOfWeek" value="CY_RTC_SUNDAY"/>
+                        <Param id="dstStopHour" value="0"/>
+                        <Param id="dstStopMonth" value="CY_RTC_OCTOBER"/>
+                        <Param id="dstStopWeek" value="CY_RTC_LAST_WEEK_OF_MONTH"/>
+                        <Param id="format" value="1"/>
+                        <Param id="hr" value="12"/>
+                        <Param id="hrFormat" value="CY_RTC_24_HOURS"/>
+                        <Param id="inFlash" value="true"/>
+                        <Param id="min" value="0"/>
+                        <Param id="month" value="CY_RTC_JANUARY"/>
+                        <Param id="sec" value="0"/>
+                        <Param id="year" value="0"/>
                     </Parameters>
                 </Personality>
                 <Personality template="mxs40pwm_ver2" version="1.0" instance="3plFNvi5Mt0">

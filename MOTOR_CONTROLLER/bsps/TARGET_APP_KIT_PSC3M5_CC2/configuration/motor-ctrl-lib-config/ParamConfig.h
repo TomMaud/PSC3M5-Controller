@@ -158,7 +158,7 @@
 /*******************************************************************************/
 /*******Control*******/
 #if defined(CTRL_METHOD_RFO) || defined(CTRL_METHOD_SFO)
-#define MOTOR_CTRL_CTRL_MODE                       (Speed_Mode_FOC_Sensorless_Volt_Startup)/*Control mode*/
+#define MOTOR_CTRL_CTRL_MODE  (Speed_Mode_FOC_Hall) /*Control mode*/
 #elif defined(CTRL_METHOD_TBC)
 #define MOTOR_CTRL_CTRL_MODE                       (Speed_Mode_Block_Comm_Hall)  /*Control mode*/
 #endif
@@ -273,9 +273,9 @@
 #define MOTOR_I_AM                                 (6.0E-3f)                   /*[Wb],  Rotor flux linkage*/
 #define MOTOR_R                                    (450.0E-3f)                 /*{Ohm],  stator resistance*/
 #define MOTOR_TORQUE_MAX                           (0.390f)                    /*[Nm],  maximum torque*/
-#define MOTOR_CURRENT_PEAK                         (10.80f)                    /*[A],  peak current rating*/
-#define MOTOR_CURRENT_CONT                         (3.50f)                     /*[A],  continuous current rating*/
-#define MOTOR_ID_MAX                               (1.75f)                     /*[A], maximum d-axis current*/
+#define MOTOR_CURRENT_PEAK                         (5.40f)                    /*[A],  peak current rating*/
+#define MOTOR_CURRENT_CONT                         (1.79f)                     /*[A],  continuous current rating*/
+#define MOTOR_ID_MAX                               (0.9f)                     /*[A], maximum d-axis current*/
 #define MOTOR_VOLTAGE                              (24.0f)                     /*[V], motor voltage*/
 #define MOTOR_NORM_SPEED                           (6000.0f)                   /*[RPM], nominal speed*/
 #define MOTOR_MAX_SPEED                            (6000.0f)                   /*[RPM],  maximum no load speed*/
