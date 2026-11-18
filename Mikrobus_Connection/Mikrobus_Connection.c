@@ -263,9 +263,24 @@ static void enter_and_restore_dormant(void)
         NULL
     );
 
+    
     printf("[WAKE] Dormant returned, result = %d\n", result);
 
-    /* Restore Wi-Fi. */
+    /*
+     * Release Core 1 immediately.
+     * This allows UART and LCD restoration to happen
+     * while Core 0 restores Wi-Fi.
+     */
+    sleep_requested = false;
+    __dmb();
+
+    release_core1_after_wake();
+
+    /*
+     * Restore Wi-Fi independently on Core 0.
+     */
+    printf("[WAKE] Starting Wi-Fi restoration\n");
+
     bool wifi_restored = restore_wifi_after_wake();
 
     if (!wifi_restored)
@@ -273,11 +288,6 @@ static void enter_and_restore_dormant(void)
         printf("[WAKE] WARNING: Wi-Fi restoration failed\n");
     }
 
-    /* Release Core 1 regardless of Wi-Fi restoration outcome. */
-    sleep_requested = false;
-    __dmb();
-
-    release_core1_after_wake();
 }
 
 
@@ -552,14 +562,18 @@ if (sleep_requested)
 
     uart_link_restore();
 
-    lcd_init();
+lcd_init();
 
-    /* Reset communication timing. */
-    last_heartbeat = to_ms_since_boot(get_absolute_time());
-    last_telemetry = 0;
+/* Reset timing */
+uint32_t wake_time = to_ms_since_boot(get_absolute_time());
 
-    t.connected = false;
-    dirty = true;
+last_heartbeat = wake_time;
+last_telemetry = wake_time;
+last_draw = wake_time - LCD_MIN_INTERVAL_MS;
+
+/* Force dashboard refresh */
+t.connected = false;
+dirty = true;
 
     /* Clear handshake flags for the next sleep cycle. */
     resume_core1 = false;
