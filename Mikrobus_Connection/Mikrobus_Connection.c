@@ -25,6 +25,8 @@
 #include "telemetry/telemetry.h"
 #include "webpage/webpage.h"
 
+#include "hardware/watchdog.h"
+
 
 /* =========================================================
    CONFIGURATION
@@ -94,7 +96,7 @@ static telemetry_t        telem_shared;    /* core 1 -> core 0 */
 static critical_section_t telem_lock;
 
 /* Written and read only on core 0 (web side) */
-static int control_source = 1;             /* 1 = webpage, 0 = potentiometer */
+static int control_source = 0;             /* 1 = webpage, 0 = potentiometer */
 static int last_rpm_request = 0;
 
 /* =========================================================
@@ -164,31 +166,42 @@ static bool restore_wifi_after_wake(void)
 {
     printf("[WAKE] Restoring Wi-Fi system\n");
 
-    /* 1. Initialise CYW43 and lwIP. */
+    /* ---------------------------------------------------------
+       1. Reinitialise CYW43 and lwIP
+       --------------------------------------------------------- */
     if (cyw43_arch_init())
     {
         printf("[WAKE] ERROR: CYW43 initialisation failed\n");
         return false;
     }
 
-    /* 2. Re-enable the access point. */
+    printf("[WAKE] CYW43 initialised\n");
+
+    /* ---------------------------------------------------------
+       2. Enable access point
+       --------------------------------------------------------- */
     cyw43_arch_enable_ap_mode(
         AP_SSID,
         AP_PASSWORD,
         CYW43_AUTH_WPA2_AES_PSK
     );
 
-    /* 3. Configure the AP network address. */
+    printf("[WAKE] Access point enabled\n");
+
+    /* ---------------------------------------------------------
+       3. Configure network address
+       --------------------------------------------------------- */
     ip_addr_t gw;
     ip_addr_t mask;
 
     IP4_ADDR(ip_2_ip4(&gw), 192, 168, 4, 1);
     IP4_ADDR(ip_2_ip4(&mask), 255, 255, 255, 0);
 
-    /* 4. Obtain the AP network interface. */
     struct netif *ap_netif = &cyw43_state.netif[CYW43_ITF_AP];
 
-    /* 5. Restart DHCP. */
+    /* ---------------------------------------------------------
+       4. Initialise DHCP
+       --------------------------------------------------------- */
     dhcp_server_init(
         &dhcp_server,
         ap_netif,
@@ -196,19 +209,27 @@ static bool restore_wifi_after_wake(void)
         &mask
     );
 
-    /* 6. Restart DNS. */
+    printf("[WAKE] DHCP server started\n");
+
+    /* ---------------------------------------------------------
+       5. Initialise DNS
+       --------------------------------------------------------- */
     dns_server_init(
         &dns_server,
         ap_netif,
         &gw
     );
 
-    /* 7. Restart HTTP. */
+    printf("[WAKE] DNS server started\n");
+
+    /* ---------------------------------------------------------
+       6. Start HTTP servers
+       --------------------------------------------------------- */
     if (!webpage_start_http_servers())
     {
         printf("[WAKE] ERROR: HTTP server failed to start\n");
 
-        /* Clean up the services that were successfully started. */
+        webpage_stop_http_servers();
         dns_server_deinit(&dns_server);
         dhcp_server_deinit(&dhcp_server);
         cyw43_arch_deinit();
@@ -216,7 +237,18 @@ static bool restore_wifi_after_wake(void)
         return false;
     }
 
-    printf("[WAKE] Wi-Fi access point restored\n");
+    printf("[WAKE] HTTP server started\n");
+
+    /* ---------------------------------------------------------
+       7. Allow CYW43 to process pending work
+       --------------------------------------------------------- */
+    for (int i = 0; i < 100; i++)
+    {
+        cyw43_arch_poll();
+        sleep_ms(10);
+    }
+
+    printf("[WAKE] Wi-Fi restoration complete\n");
     printf("[WAKE] SSID: %s\n", AP_SSID);
     printf("[WAKE] Address: http://192.168.4.1\n");
 
@@ -244,13 +276,15 @@ static void enter_and_restore_dormant(void)
 
     printf("[POWER] Core 1 parked; shutting down Wi-Fi\n");
 
-    /* Stop HTTP, DNS, DHCP and CYW43 cleanly. */
+    /* Stop HTTP, DNS, DHCP and CYW43 cleanly */
     stop_wifi_services();
 
-    /* Configure GP1 as the dormant wake input. */
+    /* Configure GP1 as dormant wake input */
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_SIO);
     gpio_set_dir(UART_RX_PIN, GPIO_IN);
     gpio_pull_up(UART_RX_PIN);
+
+    /* Turn off LCD */
     lcd_deinit();
 
     printf("[POWER] Entering Dormant; waiting for PSoC UART\n");
@@ -263,33 +297,11 @@ static void enter_and_restore_dormant(void)
         NULL
     );
 
-    
     printf("[WAKE] Dormant returned, result = %d\n", result);
 
-    /*
-     * Release Core 1 immediately.
-     * This allows UART and LCD restoration to happen
-     * while Core 0 restores Wi-Fi.
-     */
-    sleep_requested = false;
-    __dmb();
-
-    release_core1_after_wake();
-
-    /*
-     * Restore Wi-Fi independently on Core 0.
-     */
-    printf("[WAKE] Starting Wi-Fi restoration\n");
-
-    bool wifi_restored = restore_wifi_after_wake();
-
-    if (!wifi_restored)
-    {
-        printf("[WAKE] WARNING: Wi-Fi restoration failed\n");
-    }
-
+    watchdog_reboot(0, 0, 0);   /* #include "hardware/watchdog.h" */
+    while (true) tight_loop_contents();
 }
-
 
 static void uart_rx_isr(void)
 {

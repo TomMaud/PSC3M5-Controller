@@ -211,7 +211,7 @@ static void print_telemetry(void);
 
 static void M1_Hall_GPIO_Init(void);
 
-
+static bool pot_armed = false;
 
 static void enter_deep_sleep(void)
 {
@@ -582,10 +582,11 @@ static void handle_direction_change(void)
  *
  ******************************************************************************/
 
-
 static void process_uart_byte(uint8_t rx)
 {
-    /* Heartbeat is always recognised */
+    /* =========================================================
+       HEARTBEAT
+       ========================================================= */
     if (rx == HEARTBEAT_BYTE)
     {
         last_heartbeat_ms = sys_millis;
@@ -593,113 +594,349 @@ static void process_uart_byte(uint8_t rx)
         return;
     }
 
-	/* Start RTC time command */
-if (rx == 'T')
-{
-    rpm_command_active = false;
-    source_command_active = false;
 
-    time_command_active = true;
-    time_command_index = 0;
-
-    memset(time_command, 0, sizeof(time_command));
-
-    return;
-}
-
-/* Process RTC time command */
-if (time_command_active)
-{
-    if (rx == '\n' || rx == '\r')
+    /* =========================================================
+       PROCESS RTC TIME COMMAND
+       This MUST be before command-start detection.
+       ========================================================= */
+    if (time_command_active)
     {
-        int hour, minute, second;
-        int day, month, year;
-
-        time_command[time_command_index] = '\0';
-
-        if (sscanf(
-                time_command,
-                ":%d:%d:%d,%d/%d/%d",
-                &hour,
-                &minute,
-                &second,
-                &day,
-                &month,
-                &year
-            ) == 6)
+        if ((rx == '\n') || (rx == '\r'))
         {
-            if (hour >= 0 && hour <= 23 &&
-                minute >= 0 && minute <= 59 &&
-                second >= 0 && second <= 59 &&
-                day >= 1 && day <= 31 &&
-                month >= 1 && month <= 12 &&
-                year >= 0 && year <= 99)
+            int hour, minute, second;
+            int day, month, year;
+
+            time_command[time_command_index] = '\0';
+
+            if (sscanf(
+                    time_command,
+                    ":%d:%d:%d,%d/%d/%d",
+                    &hour,
+                    &minute,
+                    &second,
+                    &day,
+                    &month,
+                    &year
+                ) == 6)
             {
-                cy_en_rtc_status_t rtc_status;
-				printf(":%d:%d:%d,%d/%d/%d",
-                hour,
-                minute,
-                second,
-                day,
-                month,
-                year);
-
-                rtc_status = Cy_RTC_SetDateAndTimeDirect(
-                    second,
-                    minute,
-                    hour,
-                    day,
-                    month,
-                    year
-                );
-
-                if (rtc_status == CY_RTC_SUCCESS)
+                if (hour >= 0 && hour <= 23 &&
+                    minute >= 0 && minute <= 59 &&
+                    second >= 0 && second <= 59 &&
+                    day >= 1 && day <= 31 &&
+                    month >= 1 && month <= 12 &&
+                    year >= 0 && year <= 99)
                 {
-                    printf(
-                        "[RTC] Updated: %02d:%02d:%02d %02d/%02d/20%02d\r\n",
-                        hour, minute, second,
-                        day, month, year
+                    cy_en_rtc_status_t rtc_status;
+
+                    rtc_status = Cy_RTC_SetDateAndTimeDirect(
+                        second,
+                        minute,
+                        hour,
+                        day,
+                        month,
+                        year
                     );
+
+                    if (rtc_status == CY_RTC_SUCCESS)
+                    {
+                        printf(
+                            "[RTC] Updated: %02d:%02d:%02d "
+                            "%02d/%02d/20%02d\r\n",
+                            hour,
+                            minute,
+                            second,
+                            day,
+                            month,
+                            year
+                        );
+                    }
+                    else
+                    {
+                        printf(
+                            "[RTC] Failed to update: %d\r\n",
+                            rtc_status
+                        );
+                    }
                 }
                 else
                 {
-                    printf("[RTC] Failed to update: %d\r\n",
-                           rtc_status);
+                    printf("[RTC] Invalid date/time values\r\n");
                 }
             }
             else
             {
-                printf("[RTC] Invalid date/time values\r\n");
+                printf(
+                    "[RTC] Invalid time command: %s\r\n",
+                    time_command
+                );
+            }
+
+            time_command_active = false;
+            time_command_index = 0U;
+
+            return;
+        }
+
+        /* Store incoming RTC characters */
+        if (time_command_index < (sizeof(time_command) - 1U))
+        {
+            time_command[time_command_index++] = (char)rx;
+        }
+        else
+        {
+            time_command_active = false;
+            time_command_index = 0U;
+
+            printf("[RTC] Time command too long\r\n");
+        }
+
+        return;
+    }
+
+
+    /* =========================================================
+       PROCESS SOURCE COMMAND
+       S:PAGE = External/Webpage control
+       S:POT  = Internal/Potentiometer control
+       ========================================================= */
+    if (source_command_active)
+    {
+        /* Ignore colon */
+        if (rx == ':')
+        {
+            return;
+        }
+
+        /* End of source command */
+        if ((rx == '\n') || (rx == '\r'))
+        {
+            source_command[source_command_index] = '\0';
+
+            if (strcmp(source_command, "PAGE") == 0)
+            {
+                webpage_control_enabled = true;
+
+                PARAMS_SetCommandSource(
+                    &motor[0],
+                    External
+                );
+
+                printf("[Source] PAGE control enabled\r\n");
+            }
+            else if (strcmp(source_command, "POT") == 0)
+            {
+                webpage_control_enabled = false;
+
+                PARAMS_SetCommandSource(
+                    &motor[0],
+                    Internal
+                );
+
+                direction_change_pending = false;
+                pending_rpm = 0;
+
+                printf(
+                    "[Source] POT control enabled - "
+                    "webpage commands ignored\r\n"
+                );
+            }
+            else
+            {
+                printf(
+                    "[Source] Invalid source command: %s\r\n",
+                    source_command
+                );
+            }
+
+            source_command_active = false;
+            source_command_index = 0U;
+
+            return;
+        }
+
+        /* Store source command characters */
+        if (source_command_index < (sizeof(source_command) - 1U))
+        {
+            source_command[source_command_index++] = (char)rx;
+        }
+        else
+        {
+            source_command_active = false;
+            source_command_index = 0U;
+
+            printf("[Source] Command too long\r\n");
+        }
+
+        return;
+    }
+
+
+    /* =========================================================
+       PROCESS RPM COMMAND
+       ========================================================= */
+    if (rpm_command_active)
+    {
+        /* Ignore RPM commands if webpage control is disabled */
+        if (!webpage_control_enabled)
+        {
+            rpm_command_active = false;
+            return;
+        }
+
+        /* End of RPM command */
+        if ((rx == '\r') || (rx == '\n'))
+        {
+            if (!rpm_command_invalid)
+            {
+                int32_t requested_rpm =
+                    (int32_t)rpm_command_value;
+
+                /* Apply negative sign */
+                if (rpm_command_negative)
+                {
+                    requested_rpm = -requested_rpm;
+                }
+
+                bool requested_reverse =
+                    (requested_rpm < 0);
+
+
+                /* ---------------------------------------------
+                   STOP MOTOR
+                   --------------------------------------------- */
+                if (rpm_command_value <= MIN_REQUEST_RPM)
+                {
+                    direction_change_pending = false;
+                    pending_rpm = 0;
+
+                    motor_set_speed_rpm(0);
+                    motor_drive_set(false);
+
+                    printf("[Motor] Stopped\r\n");
+                }
+
+
+                /* ---------------------------------------------
+                   DIRECTION CHANGE
+                   --------------------------------------------- */
+                else if (requested_reverse != reversed)
+                {
+                    pending_rpm = requested_rpm;
+
+                    motor_set_speed_rpm(0);
+
+                    if (link_is_connected(sys_millis))
+                    {
+                        motor_drive_set(true);
+                    }
+
+                    direction_stop_start_ms = sys_millis;
+                    direction_change_pending = true;
+
+                    printf(
+                        "[Motor] Decelerating before direction change\r\n"
+                    );
+                }
+
+
+                /* ---------------------------------------------
+                   NORMAL SPEED COMMAND
+                   --------------------------------------------- */
+                else
+                {
+                    direction_change_pending = false;
+                    pending_rpm = 0;
+
+                    motor_set_speed_rpm(requested_rpm);
+
+                    if (link_is_connected(sys_millis))
+                    {
+                        motor_drive_set(true);
+
+                        printf("[Motor] Enabled\r\n");
+                    }
+                }
+            }
+            else
+            {
+                printf(
+                    "[Command] Invalid RPM command received\r\n"
+                );
+            }
+
+            rpm_command_active = false;
+
+            return;
+        }
+
+
+        /* Optional minus sign */
+        if ((rx == '-') && rpm_command_sign_allowed)
+        {
+            rpm_command_negative = true;
+            rpm_command_sign_allowed = false;
+
+            return;
+        }
+
+
+        /* Numerical characters */
+        if ((rx >= '0') && (rx <= '9'))
+        {
+            uint32_t digit = (uint32_t)(rx - '0');
+
+            rpm_command_sign_allowed = false;
+
+            /* Check for overflow / maximum RPM */
+            if (rpm_command_value >
+                ((MAX_REQUEST_RPM - digit) / 10U))
+            {
+                rpm_command_invalid = true;
+            }
+            else
+            {
+                rpm_command_value =
+                    (rpm_command_value * 10U) + digit;
             }
         }
         else
         {
-            printf("[RTC] Invalid time command: %s\r\n",
-                   time_command);
+            rpm_command_invalid = true;
         }
 
-        time_command_active = false;
         return;
     }
 
-    if (time_command_index < sizeof(time_command) - 1U)
+
+    /* =========================================================
+       START NEW COMMANDS
+       Only reached when no command is currently active.
+       ========================================================= */
+
+    /* Start RTC command */
+    if (rx == 'T')
     {
-        time_command[time_command_index++] = (char)rx;
-    }
-    else
-    {
-        time_command_active = false;
-        printf("[RTC] Time command too long\r\n");
+        time_command_active = true;
+
+        source_command_active = false;
+        rpm_command_active = false;
+
+        time_command_index = 0U;
+
+        memset(time_command, 0, sizeof(time_command));
+
+        return;
     }
 
-    return;
-}
+
     /* Start RPM command */
     if (rx == 'R')
     {
+        rpm_command_active = true;
+
+        time_command_active = false;
         source_command_active = false;
 
-        rpm_command_active = true;
         rpm_command_invalid = false;
         rpm_command_value = 0U;
         rpm_command_negative = false;
@@ -708,175 +945,28 @@ if (time_command_active)
         return;
     }
 
+
     /* Start source command */
     if (rx == 'S')
     {
+        source_command_active = true;
+
+        time_command_active = false;
         rpm_command_active = false;
 
-        source_command_active = true;
         source_command_index = 0U;
+
         memset(source_command, 0, sizeof(source_command));
 
         return;
     }
 
-    /* Process source command */
-    if (source_command_active)
-{
-    if (rx == ':')
-    {
-        return;
-    }
 
-    if ((rx == '\n') || (rx == '\r'))
-    {
-        source_command[source_command_index] = '\0';
-
-        if (strcmp(source_command, "PAGE") == 0)
-        {
-            webpage_control_enabled = true;
-
-            PARAMS_SetCommandSource(&motor[0], External);
-
-            printf("[Source] PAGE control enabled\r\n");
-        }
-        else if (strcmp(source_command, "POT") == 0)
-        {
-            webpage_control_enabled = false;
-
-            PARAMS_SetCommandSource(&motor[0], Internal);
-
-            direction_change_pending = false;
-            pending_rpm = 0;
-
-            printf("[Source] POT control enabled - webpage commands ignored\r\n");
-        }
-        else
-        {
-            printf("[Source] Invalid source command: %s\r\n",
-                   source_command);
-        }
-
-        source_command_active = false;
-        return;
-    }
-
-    if (source_command_index < (sizeof(source_command) - 1U))
-    {
-        source_command[source_command_index++] = (char)rx;
-    }
-    else
-    {
-        source_command_active = false;
-    }
-
+    /* =========================================================
+       IGNORE UNRECOGNISED BYTES
+       ========================================================= */
     return;
 }
-
-    /* Ignore bytes when not receiving an RPM command */
-    if (!rpm_command_active)
-    {
-        return;
-    }
-	
-	if (!webpage_control_enabled)
-	{
-	    rpm_command_active = false;
-	    return;
-	}
-    if ((rx == '\r') || (rx == '\n'))
-    {
-        if (!rpm_command_invalid)
-        {
-            int32_t requested_rpm = (int32_t)rpm_command_value;
-
-            if (rpm_command_negative)
-            {
-                requested_rpm = -requested_rpm;
-            }
-
-            bool requested_reverse = (requested_rpm < 0);
-
-            if (rpm_command_value <= MIN_REQUEST_RPM)
-            {
-                direction_change_pending = false;
-                pending_rpm = 0;
-
-                motor_set_speed_rpm(0);
-                motor_drive_set(false);
-
-                printf("[Motor] Stopped\r\n");
-            }
-            else if (requested_reverse != reversed)
-            {
-                pending_rpm = requested_rpm;
-                motor_set_speed_rpm(0);
-
-                if (link_is_connected(sys_millis))
-                {
-                    motor_drive_set(true);
-                }
-
-                direction_stop_start_ms = sys_millis;
-                direction_change_pending = true;
-
-                printf("[Motor] Decelerating before direction change\r\n");
-            }
-            else
-            {
-                direction_change_pending = false;
-                pending_rpm = 0;
-
-                motor_set_speed_rpm(requested_rpm);
-
-                if (link_is_connected(sys_millis))
-                {
-                    motor_drive_set(true);
-                    printf("[Motor] Enabled\r\n");
-                }
-            }
-        }
-        else
-        {
-            printf("[Command] Invalid RPM command received\r\n");
-        }
-
-        rpm_command_active = false;
-        return;
-    }
-
-    /* Optional minus sign */
-    if ((rx == '-') && rpm_command_sign_allowed)
-    {
-        rpm_command_negative = true;
-        rpm_command_sign_allowed = false;
-        return;
-    }
-
-    /* Numerical characters */
-    if ((rx >= '0') && (rx <= '9'))
-    {
-        uint32_t digit = (uint32_t)(rx - '0');
-
-        rpm_command_sign_allowed = false;
-
-        if (rpm_command_value > ((MAX_REQUEST_RPM - digit) / 10U))
-        {
-            rpm_command_invalid = true;
-        }
-        else
-        {
-            rpm_command_value =
-                (rpm_command_value * 10U) + digit;
-        }
-    }
-    else
-    {
-        rpm_command_invalid = true;
-    }
-}
-
-
 
 /*******************************************************************************
  * Function Name: link_poll
@@ -974,9 +1064,9 @@ static void print_telemetry(void)
 
 	float requested_rpm = 0.0f;
 	
+
 	if (motor[0].params_ptr->sys.cmd.source == External)
 	{
-	    /* Webpage / UART speed target */
 	    requested_rpm =
 	        motor[0].vars_ptr->cmd_ext *
 	        max_speed_rad_s *
@@ -985,14 +1075,8 @@ static void print_telemetry(void)
 	}
 	else
 	{
-	    /*
-	     * Internal potentiometer control.
-	     * Do not assume pot.raw is the final speed command:
-	     * its mapping must be checked against the library.
-	     */
-	    requested_rpm = -1.0f;
+	    requested_rpm = pot_raw * MOTOR_MAX_SPEED;
 	}
-
     float speed_rpm =
         (est_speed * RAD_S_TO_RPM) / MOTOR_POLE_PAIRS;
 
@@ -1037,24 +1121,25 @@ printf("[Hall Direct] U:%lu V:%lu W:%lu\r\n",
        (unsigned long)gpio_u,
        (unsigned long)gpio_v,
        (unsigned long)gpio_w);
+  // Keep this in Motor_Control_POT_Control
 
 
    printf(
     "[Telemetry] State: %u | En: %u | Pot: %.3f | "
     "Speed: %.2f rad/s | Speed: %.2f rpm | "
-    "ReqRPM: %.0f | "
+    "ReqRPM: %ld | "
     "Vdc_ADC: %lu | Iu_ADC: %lu | "
     "I_U: %.3f A | I_V: %.3f A | I_W: %.3f A | "
     "V_U: %.2f V | V_V: %.2f V | V_W: %.2f V | "
     "Faults: 0x%08lX | "
-    "Hall: %u | HallPrev: %u\r\n",
+    "Hall: %u | HallPrev: %u |Source: %d | Armed: %d \r\n",
 
         (unsigned)current_state,
         (unsigned)motor[0].vars_ptr->en,
         (double)pot_raw,
         (double)est_speed,
         (double)speed_rpm,
-		(double)requested_rpm,
+		(long)requested_rpm,
         (unsigned long)vdc_adc,
         (unsigned long)iu_adc,
         (double)current_u,
@@ -1065,7 +1150,10 @@ printf("[Hall Direct] U:%lu V:%lu W:%lu\r\n",
         (double)voltage_w,
         (unsigned long)fault_status,
         hall_signal,
-        hall_previous
+        hall_previous,
+		motor[0].params_ptr->sys.cmd.source,
+		pot_armed
+		
     );
 
     fflush(stdout);
@@ -1077,15 +1165,29 @@ printf("[Hall Direct] U:%lu V:%lu W:%lu\r\n",
 void Motor_Control_POT_Control(void)
 {
     static bool pot_armed = false;
+    static uint32_t last_log = 0U;
+
+    float pot = motor[0].sensor_iface_ptr->pot.raw;
+
+    if ((sys_millis - last_log) >= 250U)
+    {
+        last_log = sys_millis;
+
+        printf("[POT DEBUG] Source: %d | Raw: %.3f | "
+               "Armed: %d | Motor Enable: %d\r\n",
+               motor[0].params_ptr->sys.cmd.source,
+               (double)pot,
+               pot_armed,
+               motor[0].vars_ptr->en);
+
+        fflush(stdout);
+    }
 
     if (motor[0].params_ptr->sys.cmd.source != Internal)
     {
         return;
     }
 
-    float pot = motor[0].sensor_iface_ptr->pot.raw;
-
-    /* Require zero throttle before allowing motor operation */
     if (pot <= 0.025f)
     {
         pot_armed = true;
@@ -1096,7 +1198,6 @@ void Motor_Control_POT_Control(void)
         motor_drive_set(true);
     }
 }
-
 
 /*******************************************************************************
  * Function Name: main
@@ -1142,7 +1243,7 @@ __enable_irq();
 
     /* Use the external command source for motor speed control */
 
-    PARAMS_SetCommandSource(&motor[0], External);
+    PARAMS_SetCommandSource(&motor[0], Internal);
 
     (void)result;
 
@@ -1211,6 +1312,10 @@ if (sleep_pending)
 
             sleep_pending = false;
             sleep_stop_time = 0U;
+			Cy_GPIO_Write(
+			        LINK_LED_PORT,
+			        LINK_LED_PIN,
+			       0);
 
             enter_deep_sleep();
         }

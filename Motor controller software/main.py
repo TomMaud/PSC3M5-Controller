@@ -1,13 +1,15 @@
-
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
 import queue
 import re
-import time
 import serial
 from serial.tools import list_ports
-
+import time
+import json
+from datetime import datetime, timezone
+from tkinter import filedialog
+import math
 
 # ---------------------------------------------------------
 # Settings
@@ -22,6 +24,7 @@ MIN_RPM = 300
 MAX_RPM = 6000
 RPM_STEP = 10
 
+REQUESTED_SPEED = 0
 
 # ---------------------------------------------------------
 # Serial port discovery
@@ -49,7 +52,7 @@ class MotorControlGUI:
 
         self.root = root
         self.root.title("PMSM FOC Motor Controller")
-        self.root.geometry("650x600")
+        self.root.geometry("700x650")
 
         # Serial connection
         self.serial_connection = None
@@ -64,8 +67,13 @@ class MotorControlGUI:
         self.log_queue = queue.Queue()
 
         # RPM controls
-        self.rpm_var = tk.IntVar(value=0)
+        self.rpm_var = tk.IntVar(value=300)
         self.reverse_var = tk.BooleanVar(value=False)
+
+        # JSON recording
+        self.recording_file = None
+        self.recording_first_record = True
+        self.recording_lock = threading.Lock()
 
         # -------------------------------------------------
         # Connection controls
@@ -142,12 +150,21 @@ class MotorControlGUI:
         )
         speed_frame.pack(fill="x", padx=10, pady=10)
 
+        # Requested speed
         self.rpm_label = ttk.Label(
             speed_frame,
-            text="Requested Speed: 0 RPM",
-            font=("Arial", 14, "bold")
+            text="Requested Speed: 300 RPM",
+            font=("Arial", 12, "bold")
         )
         self.rpm_label.pack(pady=5)
+
+        # Actual measured motor speed
+        self.actual_rpm_label = ttk.Label(
+            speed_frame,
+            text="Measured Speed: -- RPM",
+            font=("Arial", 20, "bold")
+        )
+        self.actual_rpm_label.pack(pady=10)
 
         self.rpm_slider = tk.Scale(
             speed_frame,
@@ -229,6 +246,33 @@ class MotorControlGUI:
             yscrollcommand=scrollbar.set
         )
 
+        # Recording controls
+        recording_frame = ttk.Frame(telemetry_frame)
+        recording_frame.pack(fill="x", pady=(0, 8))
+
+        self.record_button = ttk.Button(
+            recording_frame,
+            text="Start Recording",
+            command=self.start_recording
+        )
+        self.record_button.pack(side="left", padx=5)
+
+        self.stop_record_button = ttk.Button(
+            recording_frame,
+            text="Stop Recording",
+            command=self.stop_recording,
+            state="disabled"
+        )
+        self.stop_record_button.pack(side="left", padx=5)
+
+        self.recording_status = ttk.Label(
+            recording_frame,
+            text="Not recording"
+        )
+        self.recording_status.pack(side="left", padx=10)
+
+        self.requested_speed_rpm = 0
+
         # -------------------------------------------------
         # Initialisation
         # -------------------------------------------------
@@ -239,28 +283,39 @@ class MotorControlGUI:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     # -----------------------------------------------------
-    # Logging
+    # Logging and GUI updates
     # -----------------------------------------------------
 
     def log(self, message):
-        self.log_queue.put(message)
+        self.log_queue.put(("log", message))
 
     def process_log_queue(self):
 
         while not self.log_queue.empty():
 
-            message = self.log_queue.get()
+            try:
+                message_type, message = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
 
-            self.log_text.configure(state="normal")
+            if message_type == "log":
 
-            self.log_text.insert(
-                tk.END,
-                message + "\n"
-            )
+                self.log_text.configure(state="normal")
 
-            self.log_text.see(tk.END)
+                self.log_text.insert(
+                    tk.END,
+                    message + "\n"
+                )
 
-            self.log_text.configure(state="disabled")
+                self.log_text.see(tk.END)
+
+                self.log_text.configure(state="disabled")
+
+            elif message_type == "speed":
+
+                self.actual_rpm_label.config(
+                    text=f"Measured Speed: {message:+.1f} RPM"
+                )
 
         self.root.after(100, self.process_log_queue)
 
@@ -316,6 +371,10 @@ class MotorControlGUI:
 
             self.stop_event.clear()
 
+            self.actual_rpm_label.config(
+                text="Measured Speed: -- RPM"
+            )
+
             # Start receiver thread
             self.rx_thread = threading.Thread(
                 target=self.receive_data,
@@ -347,9 +406,147 @@ class MotorControlGUI:
                 str(error)
             )
 
+    # -----------------------------------------------------
+    # JSON recording
+    # -----------------------------------------------------
+
+    def start_recording(self):
+
+        filename = filedialog.asksaveasfilename(
+            title="Save Motor Readings",
+            defaultextension=".json",
+            filetypes=[
+                ("JSON files", "*.json"),
+                ("All files", "*.*")
+            ],
+            initialfile="motor_readings.json"
+        )
+
+        if not filename:
+            return
+
+        try:
+            with self.recording_lock:
+                self.recording_file = open(
+                    filename,
+                    "w",
+                    encoding="utf-8"
+                )
+
+                # Start a JSON array. Individual readings are
+                # written into it as they arrive.
+                self.recording_file.write("[\n")
+                self.recording_file.flush()
+
+                self.recording_first_record = True
+
+            self.record_button.config(state="disabled")
+            self.stop_record_button.config(state="normal")
+            self.recording_status.config(text="Recording...")
+            self.log(f"Recording readings to: {filename}")
+
+        except OSError as error:
+            messagebox.showerror(
+                "Recording Error",
+                str(error)
+            )
+
+    def stop_recording(self):
+
+        with self.recording_lock:
+
+            if self.recording_file is None:
+                return
+
+            try:
+                # Finish the JSON array so the file is valid JSON.
+                self.recording_file.write("\n]\n")
+                self.recording_file.close()
+
+            except OSError as error:
+                self.log(f"Error closing recording: {error}")
+
+            finally:
+                self.recording_file = None
+
+        self.record_button.config(state="normal")
+        self.stop_record_button.config(state="disabled")
+        self.recording_status.config(text="Not recording")
+
+        self.log("Recording stopped.")
+
+    def parse_telemetry(self, line):
+
+        reading = {
+            "time_ms": int(time.time() * 1000)
+        }
+
+        patterns = {
+            "speed_rpm": (
+                r"Speed:\s*(-?\d+(?:\.\d+)?)\s*rpm"
+            ),
+            "current_u": r"I_U:\s*(-?\d+(?:\.\d+)?)\s*A",
+            "current_v": r"I_V:\s*(-?\d+(?:\.\d+)?)\s*A",
+            "current_w": r"I_W:\s*(-?\d+(?:\.\d+)?)\s*A",
+            "voltage_u": r"V_U:\s*(-?\d+(?:\.\d+)?)\s*V",
+            "voltage_v": r"V_V:\s*(-?\d+(?:\.\d+)?)\s*V",
+            "voltage_w": r"V_W:\s*(-?\d+(?:\.\d+)?)\s*V",
+            "pwm_u": r"PWM_U:\s*(-?\d+(?:\.\d+)?)\s*%",
+            "pwm_v": r"PWM_V:\s*(-?\d+(?:\.\d+)?)\s*%",
+            "pwm_w": r"PWM_W:\s*(-?\d+(?:\.\d+)?)\s*%"
+        }
+
+        for field, pattern in patterns.items():
+
+            match = re.search(
+                pattern,
+                line,
+                re.IGNORECASE
+            )
+
+            if match:
+                reading[field] = float(match.group(1))
+
+        reading["requested"] = self.requested_speed_rpm
+
+        return reading
+
+    def save_telemetry_record(self, reading):
+
+        """
+        Append one reading to the open JSON array.
+        Called by the serial receiver thread.
+        """
+
+        with self.recording_lock:
+
+            if self.recording_file is None:
+                return
+
+            try:
+
+                if not self.recording_first_record:
+                    self.recording_file.write(",\n")
+
+                json.dump(
+                    reading,
+                    self.recording_file,
+                    indent=4
+                )
+
+                self.recording_file.flush()
+                self.recording_first_record = False
+
+            except (OSError, ValueError) as error:
+
+                self.log_queue.put(
+                    ("log", f"JSON recording error: {error}")
+                )
+
     def disconnect(self):
 
         self.stop_event.set()
+        self.stop_recording()
 
         with self.serial_lock:
 
@@ -363,6 +560,10 @@ class MotorControlGUI:
 
         self.connection_status.config(
             text="Disconnected"
+        )
+
+        self.actual_rpm_label.config(
+            text="Measured Speed: -- RPM"
         )
 
         self.connect_button.config(state="normal")
@@ -382,14 +583,13 @@ class MotorControlGUI:
                 self.serial_connection is None
                 or not self.serial_connection.is_open
             ):
-                self.log("Cannot send command: not connected.")
                 return False
 
             try:
                 self.serial_connection.write(data)
                 return True
 
-            except serial.SerialException as error:
+            except (serial.SerialException, OSError) as error:
                 self.log(f"Serial write error: {error}")
                 return False
 
@@ -415,14 +615,22 @@ class MotorControlGUI:
             r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
         )
 
+
+        rpm_pattern = re.compile(
+            r"Speed:\s*(-?\d+(?:\.\d+)?)\s*rpm",
+            re.IGNORECASE
+        )
+
+        connection = self.serial_connection
+
         while not self.stop_event.is_set():
 
             try:
 
-                if self.serial_connection is None:
+                if connection is None or not connection.is_open:
                     break
 
-                line = self.serial_connection.readline()
+                line = connection.readline()
 
                 if not line:
                     continue
@@ -434,10 +642,36 @@ class MotorControlGUI:
 
                 decoded = ansi_escape.sub("", decoded)
 
-                if decoded:
-                    self.log(decoded)
 
-            except serial.SerialException as error:
+                if decoded:
+
+                    # Process motor telemetry
+                    if "[Telemetry]" in decoded:
+
+                        # Extract actual motor speed
+                        rpm_match = rpm_pattern.search(decoded)
+
+                        if rpm_match:
+                            actual_rpm = float(
+                                rpm_match.group(1)
+                            )
+
+                            self.log_queue.put(
+                                ("speed", actual_rpm)
+                            )
+
+                        # Save the complete telemetry reading
+                        reading = self.parse_telemetry(decoded)
+
+                        self.save_telemetry_record(reading)
+
+                    # Display incoming serial messages in the log
+                    else:
+                        self.log(decoded)
+
+
+
+            except (serial.SerialException, OSError) as error:
 
                 if not self.stop_event.is_set():
                     self.log(f"Serial receive error: {error}")
@@ -468,6 +702,7 @@ class MotorControlGUI:
         if self.reverse_var.get():
             rpm = -rpm
 
+        self.requested_speed_rpm = rpm
         command = f"R{rpm}\n".encode("ascii")
 
         if self.send_serial(command):
@@ -488,6 +723,7 @@ class MotorControlGUI:
 
         self.rpm_var.set(0)
         self.update_rpm_label(0)
+        self.requested_speed_rpm = 0
 
         if self.send_serial(b"R0\n"):
             self.log("Sent motor stop command.")

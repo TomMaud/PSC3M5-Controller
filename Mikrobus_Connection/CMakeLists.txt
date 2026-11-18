@@ -65,6 +65,7 @@ target_link_libraries(Mikrobus_Connection
         hardware_dma
         hardware_irq
         pico_cyw43_arch_lwip_poll
+        hardware_watchdog
 )
 
 pico_add_extra_outputs(Mikrobus_Connection)
