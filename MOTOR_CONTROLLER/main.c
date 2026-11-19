@@ -261,30 +261,30 @@ static void enter_deep_sleep(void)
 
     printf("[Wake] MCU waking up\r\n");
 
-    /* Restore UART */
-    debug_uart_init();
 
-    /* Restore SysTick */
-    Cy_SysTick_Init(
-        CY_SYSTICK_CLOCK_SOURCE_CLK_CPU,
-        SystemCoreClock / 1000UL
-    );
-
-    Cy_SysTick_SetCallback(0U, systick_handler);
-
-    /* Reset timing */
-    sys_millis = 0U;
-    sleep_pending = false;
-    sleep_stop_time = 0U;
-
-    sleep_button_pressed = false;
-    wake_from_sleep = false;
-
-    /* Keep motor disabled */
-    motor_drive_set(false);
-
+	cybsp_init();
+	HW_IFACE_ConnectFcnPointers();
+	STATE_MACHINE_Init();
+	M1_Hall_GPIO_Init();
+	debug_uart_init();
+	for (int i = 0; i < 10; i++)
+	{
+	    Cy_SCB_UART_PutString(DEBUG_UART_HW, "WAKE:\n");
+	    while (!Cy_SCB_UART_IsTxComplete(DEBUG_UART_HW)) { }
+	    Cy_SysLib_Delay(30);
+	}
+	sleep_button_init();
+	__enable_irq();  
+	Cy_SysTick_Init(CY_SYSTICK_CLOCK_SOURCE_CLK_CPU, SystemCoreClock / 1000UL);
+	Cy_SysTick_SetCallback(0U, systick_handler);
     printf("[Wake] UART and SysTick restored\r\n");
     fflush(stdout);
+	sleep_button_pressed = false;
+	wake_from_sleep = false;
+	sleep_pending = false;
+	sleep_stop_time = 0U;
+	pot_armed = false;   
+	motor_drive_set(false);
 }
 
 

@@ -134,8 +134,8 @@
 #endif
 /*******Feedback*******/
 /*********Hall Sensor*********/
-#define MOTOR_CTRL_HALL_ANGLE_OFFSET               (0.0f)                      /*[deg], Hall angle offset*/
-#define MOTOR_CTRL_HALL_ANGLE_OFFSET_COMP          (Dis)                       /*Dis =0, En=1, Enable/disable offset compensation*/
+#define MOTOR_CTRL_HALL_ANGLE_OFFSET               (30.0f)                      /*[deg], Hall angle offset*/
+#define MOTOR_CTRL_HALL_ANGLE_OFFSET_COMP          (En)                       /*Dis =0, En=1, Enable/disable offset compensation*/
 
 /*********Incremental Encoder*********/
 #define MOTOR_CTRL_ENCODER_CPR                     (16384U)                    /*[], Edges per revolution*/
