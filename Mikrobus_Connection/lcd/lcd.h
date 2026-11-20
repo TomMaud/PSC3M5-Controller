@@ -7,7 +7,7 @@ void lcd_init(void);
 void lcd_draw_dashboard(
     float rpm,
     float requested_rpm,
-    float iu, float iv, float iw,
+    unsigned int position,
     int state,
     int enabled,
     bool rtc_valid,
@@ -15,7 +15,8 @@ void lcd_draw_dashboard(
     int rtc_minute,
     int rtc_second,
     uint32_t faults,
-    bool connected);
+    bool connected
+);
 
 void lcd_deinit(void);
 

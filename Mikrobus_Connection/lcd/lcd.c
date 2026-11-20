@@ -394,12 +394,11 @@ void lcd_deinit(void)
     spi_deinit(spi0);
 }
 
+
 void lcd_draw_dashboard(
     float rpm,
-    float requested_rpm,  // NEW
-    float iu,
-    float iv,
-    float iw,
+    float requested_rpm,
+    unsigned int position,
     int state,
     int enabled,
     bool rtc_valid,
@@ -407,7 +406,8 @@ void lcd_draw_dashboard(
     int rtc_minute,
     int rtc_second,
     uint32_t faults,
-    bool connected){
+    bool connected
+){
 
 char text[32];
 
@@ -490,16 +490,26 @@ else
 
    // ---- Right column: currents and requested speed ----
 
-lcd_draw_text(128, 22, "CURRENT A", YELLOW, BLACK, 1);
+/* Hall sensor position */
+lcd_draw_text(128, 22, "POSITION", YELLOW, BLACK, 1);
 
-snprintf(text, sizeof(text), "U %.2f", iu);
-lcd_draw_text_field(128, 36, 84, 7, text, WHITE, BLACK, 1);
+if (position <= 7U)
+{
+    snprintf(text, sizeof(text), "%u", position);
+}
+else
+{
+    snprintf(text, sizeof(text), "---");
+}
 
-snprintf(text, sizeof(text), "V %.2f", iv);
-lcd_draw_text_field(128, 48, 84, 7, text, WHITE, BLACK, 1);
+lcd_draw_text_field(
+    128, 38, 84, 18,
+    text,
+    WHITE,
+    BLACK,
+    2
+);
 
-snprintf(text, sizeof(text), "W %.2f", iw);
-lcd_draw_text_field(128, 60, 84, 7, text, WHITE, BLACK, 1);
 
 lcd_draw_text(128, 82, "REQUESTED", YELLOW, BLACK, 1);
 

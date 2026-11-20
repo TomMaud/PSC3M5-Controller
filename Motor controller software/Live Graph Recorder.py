@@ -2,14 +2,16 @@
 import serial
 import json
 import time
-import os
-
+import threading
+import re
+import queue
 import tkinter as tk
+
 from tkinter import filedialog, messagebox
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 
-from datetime import datetime
 
 # ============================================================
 # CONFIGURATION
@@ -18,276 +20,706 @@ from datetime import datetime
 PORT = "/dev/cu.usbmodem1101"
 BAUD_RATE = 115200
 
+SERIAL_TIMEOUT = 0.2
+
 # ============================================================
-# RECORD MOTOR DATA
+# GLOBAL DATA
 # ============================================================
 
-def record_data():
+readings = []
 
-    print(f"Connecting to {PORT}...")
+recording = False
+serial_thread = None
+stop_event = threading.Event()
+
+message_queue = queue.Queue()
+
+
+# ============================================================
+# TELEMETRY PARSER
+# ============================================================
+
+def parse_telemetry_line(line):
+
+    if "[Telemetry]" not in line:
+        return None
+
+    def get_value(pattern, conversion=float):
+
+        match = re.search(pattern, line)
+
+        if not match:
+            return None
+
+        try:
+            return conversion(match.group(1))
+        except (ValueError, TypeError):
+            return None
+
+    data = {
+        "state": get_value(r"State:\s*(\d+)", int),
+
+        "enabled": get_value(r"En:\s*(\d+)", int),
+
+        "rpm": get_value(
+            r"Speed:\s*(-?\d+(?:\.\d+)?)"
+        ),
+
+        "requested_rpm": get_value(
+            r"ReqRPM:\s*(-?\d+(?:\.\d+)?)"
+        ),
+
+        "faults": get_value(
+            r"Faults:\s*(0x[0-9A-Fa-f]+)",
+            lambda x: int(x, 16)
+        ),
+
+        "hall": get_value(
+            r"Hall:\s*(\d+)",
+            int
+        ),
+
+        "time_ms": get_value(
+            r"Time:\s*(\d+)",
+            int
+        ),
+
+        # PSoC transmits currents in milliamps.
+        # Convert to amps for recording.
+
+        "current_u": get_value(
+            r"Iu:\s*(-?\d+)",
+            lambda x: int(x) / 1000.0
+        ),
+
+        "current_v": get_value(
+            r"Iv:\s*(-?\d+)",
+            lambda x: int(x) / 1000.0
+        ),
+
+        "current_w": get_value(
+            r"Iw:\s*(-?\d+)",
+            lambda x: int(x) / 1000.0
+        ),
+    }
+
+    required_fields = [
+        "time_ms",
+        "current_u",
+        "current_v",
+        "current_w"
+    ]
+
+    if any(data[field] is None for field in required_fields):
+        return None
+
+    return data
+
+
+# ============================================================
+# SERIAL RECORDING
+# ============================================================
+
+def serial_recording():
+
+    global readings
+
+    ser = None
+    start_timestamp = None
 
     try:
+
         ser = serial.Serial(
             PORT,
             BAUD_RATE,
-            timeout=1
+            timeout=SERIAL_TIMEOUT
         )
 
-        time.sleep(2)
+        message_queue.put(("status", "Connected to " + PORT))
+
+        # Allow the serial connection to settle.
+        time.sleep(1)
+
         ser.reset_input_buffer()
 
-        print("Connected successfully.")
-
-    except serial.SerialException as error:
-        print(f"Serial connection error: {error}")
-        return None
-
-    readings = []
-
-    first_timestamp = None
-    last_timestamp = None
-    timestamp_offset = 0
-
-    total_samples = 0
-
-    print("\nRecording motor currents...")
-    print("Press CTRL+C to stop.\n")
-
-    try:
-
-        while True:
+        while not stop_event.is_set():
 
             raw_line = ser.readline()
 
             if not raw_line:
                 continue
 
-            try:
+            line = raw_line.decode(
+                "utf-8",
+                errors="ignore"
+            ).strip()
 
-                line = raw_line.decode(
-                    "utf-8",
-                    errors="ignore"
-                ).strip()
+            if not line:
+                continue
 
-                parts = line.split(",")
+            data = parse_telemetry_line(line)
 
-                if len(parts) != 5 or parts[0] != "I":
-                    continue
+            if data is None:
+                continue
 
-                timestamp_ms = int(parts[1])
+            timestamp = data["time_ms"]
 
-                # Convert mA to A
-                iu = int(parts[2]) / 1000.0
-                iv = int(parts[3]) / 1000.0
-                iw = int(parts[4]) / 1000.0
+            if start_timestamp is None:
+                start_timestamp = timestamp
 
-                # Handle timestamp rollover
-                if (
-                    last_timestamp is not None
-                    and timestamp_ms < last_timestamp
-                ):
-                    timestamp_offset += 2**32
+            # Handle 32-bit millisecond timestamp rollover.
+            elapsed_ms = (
+                timestamp - start_timestamp
+            ) & 0xFFFFFFFF
 
-                last_timestamp = timestamp_ms
+            elapsed_time = elapsed_ms / 1000.0
 
-                adjusted_timestamp = (
-                    timestamp_ms + timestamp_offset
-                )
+            record = {
+                "time_ms": timestamp,
+                "elapsed_time_s": elapsed_time,
 
-                if first_timestamp is None:
-                    first_timestamp = adjusted_timestamp
+                "current_u": data["current_u"],
+                "current_v": data["current_v"],
+                "current_w": data["current_w"],
 
-                elapsed_time = (
-                    adjusted_timestamp - first_timestamp
-                ) / 1000.0
+                "rpm": data["rpm"],
+                "requested_rpm": data["requested_rpm"],
 
-                # Store as a Python dictionary
-                reading = {
-                    "time_ms": adjusted_timestamp,
-                    "elapsed_time_s": elapsed_time,
-                    "current_u": iu,
-                    "current_v": iv,
-                    "current_w": iw
-                }
+                "state": data["state"],
+                "enabled": data["enabled"],
+                "faults": data["faults"],
+                "hall": data["hall"],
+            }
 
-                readings.append(reading)
+            readings.append(record)
 
-                total_samples += 1
+            message_queue.put(("reading", record))
 
-                if total_samples % 10 == 0:
+    except serial.SerialException as error:
 
-                    print(
-                        f"Samples: {total_samples} | "
-                        f"Time: {elapsed_time:.2f}s | "
-                        f"U: {iu:.3f}A | "
-                        f"V: {iv:.3f}A | "
-                        f"W: {iw:.3f}A"
-                    )
+        message_queue.put(
+            ("error", f"Serial error: {error}")
+        )
 
-            except (ValueError, IndexError) as error:
-                print(f"Invalid message: {error}")
+    except Exception as error:
 
-    except KeyboardInterrupt:
-        print("\nRecording stopped.")
+        message_queue.put(
+            ("error", f"Recording error: {error}")
+        )
 
     finally:
-        ser.close()
 
-    print(f"\nTotal samples: {total_samples}")
+        if ser is not None and ser.is_open:
+            ser.close()
 
-    return readings
+        message_queue.put(("finished", None))
+
+
+# ============================================================
+# START RECORDING
+# ============================================================
+
+def start_recording():
+
+    global recording
+    global serial_thread
+    global readings
+
+    if recording:
+        return
+
+    readings = []
+
+    stop_event.clear()
+
+    recording = True
+
+    start_button.config(state=tk.DISABLED)
+    stop_button.config(state=tk.NORMAL)
+
+    status_label.config(text="Connecting...")
+
+    serial_thread = threading.Thread(
+        target=serial_recording,
+        daemon=True
+    )
+
+    serial_thread.start()
+
+
+# ============================================================
+# STOP RECORDING
+# ============================================================
+
+def stop_recording():
+
+    global recording
+
+    if not recording:
+        return
+
+    stop_event.set()
+
+    status_label.config(text="Stopping...")
 
 
 # ============================================================
 # SAVE JSON
 # ============================================================
 
-def save_json_file(readings):
+def save_json_file():
 
     if not readings:
-        print("No readings to save.")
-        return None
 
-    filename = (
-        f"motor_readings_"
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        messagebox.showwarning(
+            "No data",
+            "There are no motor readings to save."
+        )
+
+        return
+
+    filename = filedialog.asksaveasfilename(
+        defaultextension=".json",
+        filetypes=[
+            ("JSON files", "*.json")
+        ],
+        initialfile=(
+            "motor_data_"
+            + datetime.now().strftime("%Y%m%d_%H%M%S")
+            + ".json"
+        )
     )
+
+    if not filename:
+        return
 
     try:
 
-        with open(filename, "w", encoding="utf-8") as file:
+        with open(filename, "w") as file:
 
             json.dump(
                 readings,
                 file,
-                indent=4,
-                allow_nan=False
+                indent=4
             )
 
-        print(f"JSON saved successfully: {filename}")
+        messagebox.showinfo(
+            "Saved",
+            f"Motor data saved successfully:\n{filename}"
+        )
 
-        return filename
+    except Exception as error:
 
-    except (OSError, TypeError, ValueError) as error:
-
-        print(f"JSON save error: {error}")
-        return None
+        messagebox.showerror(
+            "Save error",
+            str(error)
+        )
 
 
 # ============================================================
-# LOAD JSON FILE
+# LOAD JSON
 # ============================================================
 
 def load_json_file():
 
-    root = tk.Tk()
-    root.withdraw()
+    global readings
 
     filename = filedialog.askopenfilename(
-        title="Select Motor Readings",
-        filetypes=[("JSON files", "*.json")]
+        filetypes=[
+            ("JSON files", "*.json")
+        ]
     )
 
-    root.destroy()
-
     if not filename:
-        return None
+        return
 
     try:
 
-        with open(filename, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        with open(filename, "r") as file:
+            loaded_data = json.load(file)
 
-        if not isinstance(data, list):
-            raise ValueError("Expected a JSON list of readings.")
+        if not isinstance(loaded_data, list):
+            raise ValueError("The JSON file must contain a list of readings.")
 
-        print(f"Loaded {len(data)} readings.")
+        readings = loaded_data
 
-        return data
+        status_label.config(
+            text=f"Loaded {len(readings)} readings"
+        )
 
-    except (OSError, json.JSONDecodeError, ValueError) as error:
+        messagebox.showinfo(
+            "Loaded",
+            f"Loaded {len(readings)} motor readings."
+        )
 
-        messagebox.showerror("File Error", str(error))
-        return None
+    except Exception as error:
+
+        messagebox.showerror(
+            "Load error",
+            str(error)
+        )
 
 
 # ============================================================
-# PLOT MOTOR CURRENTS
+# PLOT CURRENT GRAPHS
 # ============================================================
 
-def plot_currents(data):
+def plot_current_graphs():
 
-    if not data:
-        print("No readings found.")
+    if not readings:
+
+        messagebox.showwarning(
+            "No data",
+            "Record or load motor data first."
+        )
+
         return
 
     times = [
-        reading["elapsed_time_s"]
-        for reading in data
+        item["elapsed_time_s"]
+        for item in readings
     ]
 
     current_u = [
-        reading.get("current_u")
-        for reading in data
+        item["current_u"]
+        for item in readings
     ]
 
     current_v = [
-        reading.get("current_v")
-        for reading in data
+        item["current_v"]
+        for item in readings
     ]
 
     current_w = [
-        reading.get("current_w")
-        for reading in data
+        item["current_w"]
+        for item in readings
     ]
 
-    fig, ax = plt.subplots(figsize=(12, 6))
+    plt.figure(figsize=(12, 6))
 
-    ax.plot(times, current_u, label="Phase U")
-    ax.plot(times, current_v, label="Phase V")
-    ax.plot(times, current_w, label="Phase W")
+    plt.plot(times, current_u, label="Phase U")
+    plt.plot(times, current_v, label="Phase V")
+    plt.plot(times, current_w, label="Phase W")
 
-    ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("Current (A)")
+    plt.title("Motor Phase Currents")
 
-    ax.set_title("PMSM Phase Currents")
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Current (A)")
 
-    ax.grid(True)
-    ax.legend()
+    plt.grid(True)
+    plt.legend()
 
     plt.tight_layout()
     plt.show()
 
 
 # ============================================================
-# MAIN
+# PLOT MOTOR SPEED
 # ============================================================
 
-if __name__ == "__main__":
+def plot_speed_graph():
 
-    print("1. Record new motor data")
-    print("2. Load existing JSON data")
+    if not readings:
 
-    choice = input("\nSelect option: ").strip()
+        messagebox.showwarning(
+            "No data",
+            "Record or load motor data first."
+        )
 
-    if choice == "1":
+        return
 
-        readings = record_data()
+    times = [
+        item["elapsed_time_s"]
+        for item in readings
+    ]
 
-        if readings:
+    actual_speed = [
+        item.get("rpm", 0)
+        for item in readings
+    ]
 
-            filename = save_json_file(readings)
+    requested_speed = [
+        item.get("requested_rpm", 0)
+        for item in readings
+    ]
 
-            if filename:
-                plot_currents(readings)
+    plt.figure(figsize=(12, 6))
 
-    elif choice == "2":
+    plt.plot(
+        times,
+        actual_speed,
+        label="Actual RPM"
+    )
 
-        readings = load_json_file()
+    plt.plot(
+        times,
+        requested_speed,
+        label="Requested RPM",
+        linestyle="--"
+    )
 
-        if readings is not None:
-            plot_currents(readings)
+    plt.title("Motor Speed")
 
-    else:
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Speed (RPM)")
 
-        print("Invalid selection.")
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# PLOT HALL POSITION
+# ============================================================
+
+def plot_hall_graph():
+
+    if not readings:
+
+        messagebox.showwarning(
+            "No data",
+            "Record or load motor data first."
+        )
+
+        return
+
+    times = [
+        item["elapsed_time_s"]
+        for item in readings
+    ]
+
+    hall = [
+        item.get("hall", 0)
+        for item in readings
+    ]
+
+    plt.figure(figsize=(12, 5))
+
+    plt.step(
+        times,
+        hall,
+        where="post",
+        label="Hall State"
+    )
+
+    plt.title("Motor Hall Sensor Position")
+
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Hall State")
+
+    plt.yticks(range(8))
+    plt.ylim(-0.5, 7.5)
+
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# PROCESS SERIAL THREAD MESSAGES
+# ============================================================
+
+def process_messages():
+
+    global recording
+
+    try:
+
+        while True:
+
+            message_type, data = message_queue.get_nowait()
+
+            if message_type == "status":
+
+                status_label.config(text=data)
+
+            elif message_type == "reading":
+
+                status_label.config(
+                    text=(
+                        f"Recording | "
+                        f"RPM: {data['rpm']} | "
+                        f"Hall: {data['hall']} | "
+                        f"Samples: {len(readings)}"
+                    )
+                )
+
+            elif message_type == "error":
+
+                status_label.config(text=data)
+
+                messagebox.showerror(
+                    "Recording error",
+                    data
+                )
+
+            elif message_type == "finished":
+
+                recording = False
+
+                start_button.config(state=tk.NORMAL)
+                stop_button.config(state=tk.DISABLED)
+
+                if not stop_event.is_set():
+                    status_label.config(
+                        text="Recording stopped"
+                    )
+                else:
+                    status_label.config(
+                        text=f"Stopped | {len(readings)} readings recorded"
+                    )
+
+    except queue.Empty:
+        pass
+
+    root.after(100, process_messages)
+
+
+# ============================================================
+# TKINTER INTERFACE
+# ============================================================
+
+root = tk.Tk()
+
+root.title("Motor Telemetry Monitor")
+root.geometry("520x420")
+
+title_label = tk.Label(
+    root,
+    text="Motor Telemetry Monitor",
+    font=("Arial", 18, "bold")
+)
+
+title_label.pack(pady=15)
+
+
+status_label = tk.Label(
+    root,
+    text="Not connected",
+    font=("Arial", 11)
+)
+
+status_label.pack(pady=10)
+
+
+# Recording controls
+
+control_frame = tk.Frame(root)
+control_frame.pack(pady=10)
+
+start_button = tk.Button(
+    control_frame,
+    text="Start Recording",
+    width=18,
+    command=start_recording
+)
+
+start_button.grid(row=0, column=0, padx=5)
+
+
+stop_button = tk.Button(
+    control_frame,
+    text="Stop Recording",
+    width=18,
+    command=stop_recording,
+    state=tk.DISABLED
+)
+
+stop_button.grid(row=0, column=1, padx=5)
+
+
+# File controls
+
+file_frame = tk.Frame(root)
+file_frame.pack(pady=10)
+
+save_button = tk.Button(
+    file_frame,
+    text="Save JSON",
+    width=18,
+    command=save_json_file
+)
+
+save_button.grid(row=0, column=0, padx=5)
+
+
+load_button = tk.Button(
+    file_frame,
+    text="Load JSON",
+    width=18,
+    command=load_json_file
+)
+
+load_button.grid(row=0, column=1, padx=5)
+
+
+# Graph controls
+
+graph_frame = tk.LabelFrame(
+    root,
+    text="Motor Graphs",
+    padx=10,
+    pady=10
+)
+
+graph_frame.pack(padx=20, pady=15, fill="x")
+
+
+current_button = tk.Button(
+    graph_frame,
+    text="Phase Current Graph",
+    command=plot_current_graphs
+)
+
+current_button.pack(fill="x", pady=3)
+
+
+speed_button = tk.Button(
+    graph_frame,
+    text="Motor Speed Graph",
+    command=plot_speed_graph
+)
+
+speed_button.pack(fill="x", pady=3)
+
+
+hall_button = tk.Button(
+    graph_frame,
+    text="Hall Position Graph",
+    command=plot_hall_graph
+)
+
+hall_button.pack(fill="x", pady=3)
+
+
+# Sample count
+
+sample_label = tk.Label(
+    root,
+    text="Samples: 0"
+)
+
+sample_label.pack(pady=5)
+
+
+def update_sample_count():
+
+    sample_label.config(
+        text=f"Samples: {len(readings)}"
+    )
+
+    root.after(500, update_sample_count)
+
+
+# ============================================================
+# START APPLICATION
+# ============================================================
+
+process_messages()
+update_sample_count()
+
+root.mainloop()

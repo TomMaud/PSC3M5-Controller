@@ -79,17 +79,24 @@ typedef struct
     int year;
 } motor_cmd_t;
 
+
 typedef struct
 {
-    float    rpm;           // Actual motor speed
-    float    requested_rpm; // Requested motor speed
-    float    iu, iv, iw;    // Phase currents
-    float    vu, vv, vw;    // Phase voltages
-    int      state;
-    int      enabled;
+    float rpm;
+    float requested_rpm;
+
+    float iu, iv, iw;
+    float vu, vv, vw;
+
+    unsigned int position;
+
+    int state;
+    int enabled;
     uint32_t faults;
-    bool     connected;
+    bool connected;
+    uint32_t time_ms;
 } telemetry_t;
+
 
 static queue_t            cmd_queue;       /* core 0 -> core 1 */
 static telemetry_t        telem_shared;    /* core 1 -> core 0 */
@@ -434,31 +441,42 @@ static void core1_main(void)
                 if (index > 0)
                 {
                     line[index] = '\0';
+                    if (strncmp(line, "[Telemetry]", 11) == 0)
+                    {
+                        printf("%s\r\n", line);
+                        fflush(stdout);
 
-            if (line[0] == 'I' && line[1] == ',')
-            {
-                printf("%s\n", line);
-            }
-            else if (strncmp(line, "SLEEP:", 6) == 0)
-            {
-                //printf("Received sleep message: %s\n", line);
-                sleep_requested = true;
-            }
-            else if (strncmp(line, "TIME:", 5) == 0)
-            {
-                if (telemetry_parse_rtc(line)) { dirty = true; }
-            }
-            else if (telemetry_parse_line(line, &t.rpm, &t.requested_rpm,
-                                        &t.iu, &t.iv, &t.iw,
-                                        &t.state, &t.enabled, &t.faults))
-            {
-                last_telemetry = now;
-                t.connected = true;
-                dirty = true;
-            }   
-            index = 0;
-                            }
+                        if (telemetry_parse_line(
+                                line,
+                                &t.rpm,
+                                &t.requested_rpm,
+                                &t.iu,
+                                &t.iv,
+                                &t.iw,
+                                &t.position,
+                                &t.time_ms,
+                                &t.state,
+                                &t.enabled,
+                                &t.faults))
+                        {
+                            last_telemetry = now;
+                            t.connected = true;
+                            dirty = true;
                         }
+                    }
+                    else if (strncmp(line, "SLEEP:", 6) == 0)
+                    {
+                        sleep_requested = true;
+                    }
+                    else if (strncmp(line, "TIME:", 5) == 0)
+                    {
+                        if (telemetry_parse_rtc(line))
+                            dirty = true;
+                    }
+
+                    index = 0;
+                }
+            }
             else if (index < LINE_BUFFER_SIZE - 1)
             {
                 line[index++] = (char)c;
@@ -481,12 +499,11 @@ static void core1_main(void)
         /* ---- Display (rate limited) ---- */
         if (dirty && (now - last_draw) >= LCD_MIN_INTERVAL_MS)
         {
+            
             lcd_draw_dashboard(
                 t.rpm,
                 t.requested_rpm,
-                t.iu,
-                t.iv,
-                t.iw,
+                t.position,
                 t.state,
                 t.enabled,
                 rtc_valid,
@@ -496,6 +513,7 @@ static void core1_main(void)
                 t.faults,
                 t.connected
             );
+
 
             /* Publish snapshot for the web side */
             critical_section_enter_blocking(&telem_lock);

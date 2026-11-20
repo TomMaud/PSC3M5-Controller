@@ -60,7 +60,7 @@
 #define DEBUG_VERBOSE               (0U)
 
 #if CURRENT_STREAM_ENABLED
-#define TELEMETRY_PERIOD_MS         (250U)
+#define TELEMETRY_PERIOD_MS         (10U)
 #else
 #define TELEMETRY_PERIOD_MS         (100U)
 #endif
@@ -216,7 +216,7 @@ static void motor_set_speed_rpm(int32_t rpm);
 
 static void handle_direction_change(void);
 
-static void print_telemetry(void);
+static void print_telemetry(long now);
 
 static void M1_Hall_GPIO_Init(void);
 
@@ -249,7 +249,7 @@ static void enter_deep_sleep(void)
     /* Configure Deep Sleep */
     Cy_SysPm_SetDeepSleepMode(CY_SYSPM_MODE_DEEPSLEEP);
 
-    printf("[Sleep] Entering Deep Sleep\r\n");
+    printf("[Sleep] \r\n");
     fflush(stdout);
 
     /* Enter Deep Sleep */
@@ -482,12 +482,6 @@ static void motor_set_speed_rpm(int32_t rpm)
 
     motor[0].vars_ptr->cmd_ext = command;
 
-    printf(
-        "[Command] Requested: %ld RPM | Direction: %s | Normalised: %.3f\r\n",
-        (long)(motor[0].vars_ptr->dir < 0.0f ? -rpm : rpm),
-        motor[0].vars_ptr->dir < 0.0f ? "Reverse" : "Forward",
-        (double)command
-    );
 
     fflush(stdout);
 }
@@ -523,9 +517,6 @@ static void handle_direction_change(void)
         motor_set_speed_rpm(0);
         motor_drive_set(false);
 
-        printf(
-            "[Motor] Direction change cancelled - PC disconnected\r\n"
-        );
 
         return;
     }
@@ -551,11 +542,6 @@ static void handle_direction_change(void)
         pending_rpm = 0;
 
         motor_drive_set(true);
-
-        printf(
-            "[Motor] Direction changed to %s\r\n",
-            reversed ? "Reverse" : "Forward"
-        );
     }
 
     /* Safety timeout */
@@ -568,10 +554,6 @@ static void handle_direction_change(void)
 
         motor_set_speed_rpm(0);
         motor_drive_set(false);
-
-        printf(
-            "[Motor] Direction change timed out - motor disabled\r\n"
-        );
     }
 }
 
@@ -729,8 +711,6 @@ static void process_uart_byte(uint8_t rx)
                     &motor[0],
                     External
                 );
-
-                printf("[Source] PAGE control enabled\r\n");
             }
             else if (strcmp(source_command, "POT") == 0)
             {
@@ -744,17 +724,8 @@ static void process_uart_byte(uint8_t rx)
                 direction_change_pending = false;
                 pending_rpm = 0;
 
-                printf(
-                    "[Source] POT control enabled - "
-                    "webpage commands ignored\r\n"
-                );
-            }
-            else
-            {
-                printf(
-                    "[Source] Invalid source command: %s\r\n",
-                    source_command
-                );
+
+            
             }
 
             source_command_active = false;
@@ -773,7 +744,6 @@ static void process_uart_byte(uint8_t rx)
             source_command_active = false;
             source_command_index = 0U;
 
-            printf("[Source] Command too long\r\n");
         }
 
         return;
@@ -841,10 +811,6 @@ static void process_uart_byte(uint8_t rx)
 
                     direction_stop_start_ms = sys_millis;
                     direction_change_pending = true;
-
-                    printf(
-                        "[Motor] Decelerating before direction change\r\n"
-                    );
                 }
 
 
@@ -1055,40 +1021,13 @@ static void send_rtc_time(void)
 
 
 /*******************************************************************************
- * Function Name: print_current_stream
- *
- * Summary:
- * Sends one short line: I,<ms>,<Iu mA>,<Iv mA>,<Iw mA>\n
- * Integer milliamps keep the line to roughly 25 bytes and avoid float printf.
- ******************************************************************************/
-static void print_current_stream(uint32_t now)
-{
-    int32_t iu_ma =
-        (int32_t)(motor[0].sensor_iface_ptr->i_u.filt * 1000.0f);
-
-    int32_t iv_ma =
-        (int32_t)(motor[0].sensor_iface_ptr->i_v.filt * 1000.0f);
-
-    int32_t iw_ma =
-        (int32_t)(motor[0].sensor_iface_ptr->i_w.filt * 1000.0f);
-
-    printf("I,%lu,%ld,%ld,%ld\n",
-           (unsigned long)now,
-           (long)iu_ma,
-           (long)iv_ma,
-           (long)iw_ma);
-
-    fflush(stdout);
-}
-
-/*******************************************************************************
  * Function Name: print_telemetry
  *
  * Summary:
  * Prints motor state, speed, current, voltage and fault telemetry.
  ******************************************************************************/
 
-static void print_telemetry(void)
+static void print_telemetry(long now)
 {
     uint8_t current_state = motor[0].sm_ptr->current;
 
@@ -1141,6 +1080,14 @@ static void print_telemetry(void)
             (unsigned int)motor[0].hall_ptr->signal.uvw;
     }
 
+	int32_t iu_ma =
+        (int32_t)(motor[0].sensor_iface_ptr->i_u.filt * 1000.0f);
+
+    int32_t iv_ma =
+        (int32_t)(motor[0].sensor_iface_ptr->i_v.filt * 1000.0f);
+
+    int32_t iw_ma =
+        (int32_t)(motor[0].sensor_iface_ptr->i_w.filt * 1000.0f);
 
 
    printf(
@@ -1148,14 +1095,18 @@ static void print_telemetry(void)
     "Speed: %.2f rpm | "
     "ReqRPM: %ld | "
     "Faults: 0x%08lX | "
-    "Hall: %u \r\n",
+    "Hall: %u | Time: %lu | Iu: %ld | Iv: %ld | Iw: %ld \r\n",
 
         (unsigned)current_state,
         (unsigned)motor[0].vars_ptr->en,
         (double)speed_rpm,
 		(long)requested_rpm,
         (unsigned long)fault_status,
-        hall_signal
+        hall_signal,
+		(unsigned long)now,
+        (long)iu_ma,
+        (long)iv_ma,
+        (long)iw_ma
 		
     );
 
@@ -1337,16 +1288,6 @@ if (sleep_pending)
 
             if (connected)
             {
-                /* PC has connected */
-
-                printf("\x1b[2J\x1b[;H");
-
-                printf(
-                    "PMSM FOC Motor Telemetry - "
-                    "PC connected, motor enabled\r\n"
-                );
-
-                fflush(stdout);
 
                 last_telemetry_ms = now;
 
@@ -1373,10 +1314,6 @@ if (sleep_pending)
 					    motor_drive_set(false);
 					    motor_set_speed_rpm(0);
 					}
-
-                printf(
-                    "[Link] PC disconnected - motor disabled\r\n"
-                );
 
                 fflush(stdout);
             }
@@ -1406,7 +1343,7 @@ if (connected)
     if ((now - last_telemetry_ms) >= TELEMETRY_PERIOD_MS)
     {
         last_telemetry_ms = now;
-        print_telemetry();
+        print_telemetry(now);
     }
 
     if ((now - last_time_ms) >= TIME_UPDATE_PERIOD_MS)
@@ -1414,13 +1351,6 @@ if (connected)
         last_time_ms = now;
         send_rtc_time();
     }
-	#if CURRENT_STREAM_ENABLED
-	    if ((now - last_stream_ms) >= CURRENT_STREAM_PERIOD_MS)
-	    {
-	        last_stream_ms = now;
-	        print_current_stream(now);
-	    }
-	#endif
 }
 
 #if (CPU_LOAD_CALC_ENABLED)

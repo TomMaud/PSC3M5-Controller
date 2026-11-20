@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -70,7 +71,6 @@ static bool get_float(
     position++;
 
     char *end;
-
     float result = strtof(position, &end);
 
     if (end == position)
@@ -98,8 +98,7 @@ static bool get_integer(
     position++;
 
     char *end;
-
-    long result = strtol(position, &end, 0);
+    long result = strtol(position, &end, 10);
 
     if (end == position)
         return false;
@@ -108,6 +107,50 @@ static bool get_integer(
     return true;
 }
 
+static bool get_uint32(
+    const char *line,
+    const char *label,
+    uint32_t *value,
+    int base)
+{
+    const char *position = strstr(line, label);
+
+    if (position == NULL)
+        return false;
+
+    position = strchr(position, ':');
+
+    if (position == NULL)
+        return false;
+
+    position++;
+
+    char *end;
+    unsigned long result = strtoul(position, &end, base);
+
+    if (end == position)
+        return false;
+
+    *value = (uint32_t)result;
+    return true;
+}
+
+static bool get_current_amps(
+    const char *line,
+    const char *label,
+    float *value)
+{
+    int current_ma;
+
+    if (!get_integer(line, label, &current_ma))
+        return false;
+
+    *value = (float)current_ma / 1000.0f;
+    return true;
+}
+
+
+
 bool telemetry_parse_line(
     const char *line,
     float *rpm,
@@ -115,68 +158,55 @@ bool telemetry_parse_line(
     float *iu,
     float *iv,
     float *iw,
+    unsigned int *position,
+    uint32_t *time_ms,
     int *state,
     int *enabled,
     uint32_t *faults)
 {
-    if (telemetry_parse_rtc(line))
-{
-    return false;
-}
+    if (line == NULL)
+        return false;
+
+    // Ignore RTC messages
+    if (strncmp(line, "TIME:", 5) == 0)
+        return false;
+
+    // Only process the new telemetry format
+    if (strstr(line, "[Telemetry]") == NULL)
+        return false;
+
     bool valid = false;
 
-    float value;
-
-    // Speed in RPM: find the second Speed field if present.
-    const char *first_speed = strstr(line, "Speed:");
-    const char *second_speed = NULL;
-
-    if (first_speed != NULL)
-        second_speed = strstr(first_speed + 6, "Speed:");
-
-    if (second_speed != NULL)
-    {
-        char *end;
-        value = strtof(strchr(second_speed, ':') + 1, &end);
-
-        if (end != strchr(second_speed, ':') + 1)
-        {
-            *rpm = value;
-            valid = true;
-        }
-    }
-    else if (first_speed != NULL)
-    {
-        // Only rad/s is present: convert to RPM.
-        char *end;
-        const char *start = strchr(first_speed, ':') + 1;
-        value = strtof(start, &end);
-
-        if (end != start)
-        {
-            *rpm = value * 60.0f / 6.28318530718f;
-            valid = true;
-        }
-    }
-    // Requested motor speed in RPM
-    if (get_float(line, "ReqRPM", requested_rpm))
-    {
+    // Actual speed is already transmitted in RPM
+    if (get_float(line, "Speed", rpm))
         valid = true;
-}
 
-    get_float(line, "I_U", iu);
-    get_float(line, "I_V", iv);
-    get_float(line, "I_W", iw);
+    // Requested speed in RPM
+    get_float(line, "ReqRPM", requested_rpm);
 
+    // Phase currents arrive in milliamps and are stored in amps
+    get_current_amps(line, "Iu", iu);
+    get_current_amps(line, "Iv", iv);
+    get_current_amps(line, "Iw", iw);
 
+    // Hall sensor state
+    int hall_value;
+
+    if (get_integer(line, "Hall", &hall_value) &&
+        hall_value >= 0 && hall_value <= 7)
+    {
+        *position = (unsigned int)hall_value;
+    }
+
+    // PSoC timestamp in milliseconds
+    get_uint32(line, "Time", time_ms, 10);
+
+    // Motor state and enable status
     get_integer(line, "State", state);
     get_integer(line, "En", enabled);
 
-    int fault_value;
+    // Fault flags are hexadecimal
+    get_uint32(line, "Faults", faults, 0);
 
-    if (get_integer(line, "Faults", &fault_value)){
-        *faults = (uint32_t)fault_value;
-    }
     return valid;
 }
-

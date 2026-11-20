@@ -13,10 +13,11 @@ bool telemetry_parse_line(
     float *iu,
     float *iv,
     float *iw,
+    unsigned int *position,
+    uint32_t *time_ms,
     int *state,
     int *enabled,
-    uint32_t *faults
-);
+    uint32_t *faults);
 
 // RTC values
 extern int rtc_hour;
