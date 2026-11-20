@@ -115,9 +115,6 @@ bool telemetry_parse_line(
     float *iu,
     float *iv,
     float *iw,
-    float *vu,
-    float *vv,
-    float *vw,
     int *state,
     int *enabled,
     uint32_t *faults)
@@ -171,9 +168,6 @@ bool telemetry_parse_line(
     get_float(line, "I_V", iv);
     get_float(line, "I_W", iw);
 
-    get_float(line, "V_U", vu);
-    get_float(line, "V_V", vv);
-    get_float(line, "V_W", vw);
 
     get_integer(line, "State", state);
     get_integer(line, "En", enabled);

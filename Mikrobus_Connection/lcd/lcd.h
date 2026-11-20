@@ -8,7 +8,6 @@ void lcd_draw_dashboard(
     float rpm,
     float requested_rpm,
     float iu, float iv, float iw,
-    float vu, float vv, float vw,
     int state,
     int enabled,
     bool rtc_valid,

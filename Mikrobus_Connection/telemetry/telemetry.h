@@ -13,9 +13,6 @@ bool telemetry_parse_line(
     float *iu,
     float *iv,
     float *iw,
-    float *vu,
-    float *vv,
-    float *vw,
     int *state,
     int *enabled,
     uint32_t *faults

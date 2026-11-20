@@ -674,20 +674,7 @@ void MCU_RunISR1(void)
     motor[0].faults_ptr->flags.hw.cs_ocp = motor[0].sensor_iface_ptr->digital.fault ? 0b111 : 0b000; // hw faults only cover over-current without SGD
 #endif
 
-    // Direction switch
-#if defined(DIR_SWITCH_PORT) // switch
-    motor[0].sensor_iface_ptr->digital.dir = Cy_GPIO_Read(DIR_SWITCH_PORT, DIR_SWITCH_NUM);
-#elif defined(N_DIR_PUSHBTN_PORT) // push button
-    static bool user_btn_prev, user_btn = true;
-    user_btn_prev = user_btn;
-    user_btn = Cy_GPIO_Read(N_DIR_PUSHBTN_PORT, N_DIR_PUSHBTN_NUM);
-    motor[0].sensor_iface_ptr->digital.dir = FALL_EDGE(user_btn_prev, user_btn) ? ~motor[0].sensor_iface_ptr->digital.dir : motor[0].sensor_iface_ptr->digital.dir; // toggle switch
-#endif
 
-    // Direction LED
-#if defined(DIR_LED_PORT)
-    Cy_GPIO_Write(DIR_LED_PORT, DIR_LED_NUM, (motor[0].vars_ptr->dir == +1.0f));
-#endif
 
     // Brake switch
 #if defined(N_BRK_SWITCH_PORT)

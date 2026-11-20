@@ -52,9 +52,21 @@
 
 /* PC link settings */
 
+
+#define CURRENT_STREAM_ENABLED      (1U)
+#define CURRENT_STREAM_PERIOD_MS    (5U)
+
+/* Set to 1 to bring back the noisy debug prints */
+#define DEBUG_VERBOSE               (0U)
+
+#if CURRENT_STREAM_ENABLED
+#define TELEMETRY_PERIOD_MS         (250U)
+#else
+#define TELEMETRY_PERIOD_MS         (100U)
+#endif
+
 #define HEARTBEAT_BYTE              ((uint8_t)'H')
 #define LINK_TIMEOUT_MS             (1000U)
-#define TELEMETRY_PERIOD_MS         (100U)
 #define TIME_UPDATE_PERIOD_MS		(500U)
 
 /* Speed command settings */
@@ -88,7 +100,6 @@ static volatile bool sleep_button_pressed = false;
 static bool sleep_pending = false;
 static uint32_t sleep_stop_time = 0U;
 static bool sleeping = false;
-static bool wake_recovery = false;
 static volatile bool wake_from_sleep = false;
 
 static void sleep_button_isr(void)
@@ -116,14 +127,12 @@ static void sleep_button_init(void)
         .intrPriority = 2U
     };
 
-    /* Configure button as input */
     Cy_GPIO_SetDrivemode(
         CYBSP_USER_BTN_PORT,
         CYBSP_USER_BTN_PIN,
         CY_GPIO_DM_PULLUP
     );
 
-    /* Button is active low */
     Cy_GPIO_SetInterruptEdge(
         CYBSP_USER_BTN_PORT,
         CYBSP_USER_BTN_PIN,
@@ -981,9 +990,12 @@ static void link_poll(void)
     {
         uint8_t rx = (uint8_t)Cy_SCB_UART_Get(DEBUG_UART_HW);
 
-        printf("[UART RX] 0x%02X '%c'\r\n",
-               rx,
-               (rx >= 32U && rx <= 126U) ? rx : '.');
+		#if DEBUG_VERBOSE
+		        printf("[UART RX] 0x%02X '%c'\r\n",
+		               rx,
+		               (rx >= 32U && rx <= 126U) ? rx : '.');
+		#endif
+
 
         if (rx == HEARTBEAT_BYTE)
         {
@@ -1040,6 +1052,35 @@ static void send_rtc_time(void)
     printf("%s", buffer);
     fflush(stdout);
 }
+
+
+/*******************************************************************************
+ * Function Name: print_current_stream
+ *
+ * Summary:
+ * Sends one short line: I,<ms>,<Iu mA>,<Iv mA>,<Iw mA>\n
+ * Integer milliamps keep the line to roughly 25 bytes and avoid float printf.
+ ******************************************************************************/
+static void print_current_stream(uint32_t now)
+{
+    int32_t iu_ma =
+        (int32_t)(motor[0].sensor_iface_ptr->i_u.filt * 1000.0f);
+
+    int32_t iv_ma =
+        (int32_t)(motor[0].sensor_iface_ptr->i_v.filt * 1000.0f);
+
+    int32_t iw_ma =
+        (int32_t)(motor[0].sensor_iface_ptr->i_w.filt * 1000.0f);
+
+    printf("I,%lu,%ld,%ld,%ld\n",
+           (unsigned long)now,
+           (long)iu_ma,
+           (long)iv_ma,
+           (long)iw_ma);
+
+    fflush(stdout);
+}
+
 /*******************************************************************************
  * Function Name: print_telemetry
  *
@@ -1051,12 +1092,10 @@ static void print_telemetry(void)
 {
     uint8_t current_state = motor[0].sm_ptr->current;
 
-    uint32_t vdc_adc = mcu[0].dma_results[2];
-    uint32_t iu_adc  = mcu[0].dma_results[0];
 
     uint32_t fault_status = faults[0].flags.sw.reg;
 
-    float pot_raw = motor[0].sensor_iface_ptr->pot.raw;
+  
 
     float est_speed = motor[0].vars_ptr->w_final_filt.elec;
 	float max_speed_rad_s =
@@ -1075,84 +1114,48 @@ static void print_telemetry(void)
 	}
 	else
 	{
+		float pot_raw = motor[0].sensor_iface_ptr->pot.raw;
 	    requested_rpm = pot_raw * MOTOR_MAX_SPEED;
 	}
     float speed_rpm =
         (est_speed * RAD_S_TO_RPM) / MOTOR_POLE_PAIRS;
 
-    float current_u = motor[0].sensor_iface_ptr->i_u.filt;
-    float current_v = motor[0].sensor_iface_ptr->i_v.filt;
-    float current_w = motor[0].sensor_iface_ptr->i_w.filt;
 
-    float voltage_u = 0.0f;
-    float voltage_v = 0.0f;
-    float voltage_w = 0.0f;
 
     /* Hall sensor readings */
     unsigned int hall_signal = 999U;
-    unsigned int hall_previous = 999U;
+	#if DEBUG_VERBOSE
+    uint32_t gpio_u = Cy_GPIO_Read(GPIO_PRT3, 0U);
+    uint32_t gpio_v = Cy_GPIO_Read(GPIO_PRT3, 1U);
+    uint32_t gpio_w = Cy_GPIO_Read(GPIO_PRT3, 2U);
+
+    printf("[Hall Direct] U:%lu V:%lu W:%lu\r\n",
+           (unsigned long)gpio_u,
+           (unsigned long)gpio_v,
+           (unsigned long)gpio_w);
+#endif
 
     if (motor[0].hall_ptr != NULL)
     {
         hall_signal =
             (unsigned int)motor[0].hall_ptr->signal.uvw;
-
-        hall_previous =
-            (unsigned int)motor[0].hall_ptr->signal_prev.uvw;
     }
 
-#if !defined(MOTOR_CTRL_DISABLE_ADDON_FEATURES)
-
-    if (hw_fcn.ArePhaseVoltagesMeasured(motor[0].motor_instance))
-    {
-        voltage_u = motor[0].vars_ptr->v_uvw_n_fb.u;
-        voltage_v = motor[0].vars_ptr->v_uvw_n_fb.v;
-        voltage_w = motor[0].vars_ptr->v_uvw_n_fb.w;
-    }
-
-#endif
-
-
-uint32_t gpio_u = Cy_GPIO_Read(GPIO_PRT3, 0U);
-uint32_t gpio_v = Cy_GPIO_Read(GPIO_PRT3, 1U);
-uint32_t gpio_w = Cy_GPIO_Read(GPIO_PRT3, 2U);
-
-printf("[Hall Direct] U:%lu V:%lu W:%lu\r\n",
-       (unsigned long)gpio_u,
-       (unsigned long)gpio_v,
-       (unsigned long)gpio_w);
-  // Keep this in Motor_Control_POT_Control
 
 
    printf(
-    "[Telemetry] State: %u | En: %u | Pot: %.3f | "
-    "Speed: %.2f rad/s | Speed: %.2f rpm | "
+    "[Telemetry] State: %u | En: %u  "
+    "Speed: %.2f rpm | "
     "ReqRPM: %ld | "
-    "Vdc_ADC: %lu | Iu_ADC: %lu | "
-    "I_U: %.3f A | I_V: %.3f A | I_W: %.3f A | "
-    "V_U: %.2f V | V_V: %.2f V | V_W: %.2f V | "
     "Faults: 0x%08lX | "
-    "Hall: %u | HallPrev: %u |Source: %d | Armed: %d \r\n",
+    "Hall: %u \r\n",
 
         (unsigned)current_state,
         (unsigned)motor[0].vars_ptr->en,
-        (double)pot_raw,
-        (double)est_speed,
         (double)speed_rpm,
 		(long)requested_rpm,
-        (unsigned long)vdc_adc,
-        (unsigned long)iu_adc,
-        (double)current_u,
-        (double)current_v,
-        (double)current_w,
-        (double)voltage_u,
-        (double)voltage_v,
-        (double)voltage_w,
         (unsigned long)fault_status,
-        hall_signal,
-        hall_previous,
-		motor[0].params_ptr->sys.cmd.source,
-		pot_armed
+        hall_signal
 		
     );
 
@@ -1165,23 +1168,9 @@ printf("[Hall Direct] U:%lu V:%lu W:%lu\r\n",
 void Motor_Control_POT_Control(void)
 {
     static bool pot_armed = false;
-    static uint32_t last_log = 0U;
 
     float pot = motor[0].sensor_iface_ptr->pot.raw;
 
-    if ((sys_millis - last_log) >= 250U)
-    {
-        last_log = sys_millis;
-
-        printf("[POT DEBUG] Source: %d | Raw: %.3f | "
-               "Armed: %d | Motor Enable: %d\r\n",
-               motor[0].params_ptr->sys.cmd.source,
-               (double)pot,
-               pot_armed,
-               motor[0].vars_ptr->en);
-
-        fflush(stdout);
-    }
 
     if (motor[0].params_ptr->sys.cmd.source != Internal)
     {
@@ -1243,7 +1232,7 @@ __enable_irq();
 
     /* Use the external command source for motor speed control */
 
-    PARAMS_SetCommandSource(&motor[0], Internal);
+    PARAMS_SetCommandSource(&motor[0], External);
 
     (void)result;
 
@@ -1251,6 +1240,7 @@ __enable_irq();
 
     uint32_t last_telemetry_ms = sys_millis;
 	uint32_t last_time_ms = sys_millis;
+    uint32_t last_stream_ms = sys_millis;
 
     /***************************************************************************
      * Main Loop
@@ -1424,6 +1414,13 @@ if (connected)
         last_time_ms = now;
         send_rtc_time();
     }
+	#if CURRENT_STREAM_ENABLED
+	    if ((now - last_stream_ms) >= CURRENT_STREAM_PERIOD_MS)
+	    {
+	        last_stream_ms = now;
+	        print_current_stream(now);
+	    }
+	#endif
 }
 
 #if (CPU_LOAD_CALC_ENABLED)

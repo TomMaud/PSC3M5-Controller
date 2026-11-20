@@ -46,7 +46,7 @@
 #define LCD_MIN_INTERVAL_MS   100
 
 #define LINE_BUFFER_SIZE      512
-#define RX_RING_SIZE          512
+#define RX_RING_SIZE          2048
 
 #define RPM_LIMIT             6000
 
@@ -96,7 +96,7 @@ static telemetry_t        telem_shared;    /* core 1 -> core 0 */
 static critical_section_t telem_lock;
 
 /* Written and read only on core 0 (web side) */
-static int control_source = 0;             /* 1 = webpage, 0 = potentiometer */
+static int control_source = 1;             /* 1 = webpage, 0 = potentiometer */
 static int last_rpm_request = 0;
 
 /* =========================================================
@@ -434,56 +434,31 @@ static void core1_main(void)
                 if (index > 0)
                 {
                     line[index] = '\0';
-                    printf(line);
 
-                    if (strncmp(line, "SLEEP:", 6) == 0){
-                        printf("Received sleep message: %s\n", line);
-                        sleep_requested = true;
-                    }
-
-                    if (strncmp(line, "TIME:", 5) == 0)
-{
-    if (telemetry_parse_rtc(line))
-    {
-        dirty = true;
-
-        printf("RTC updated: %02d:%02d:%02d %02d/%02d/%04d\n",
-               rtc_hour,
-               rtc_minute,
-               rtc_second,
-               rtc_day,
-               rtc_month,
-               rtc_year);
-    }
-    else
-    {
-        printf("Invalid RTC message: %s\n", line);
-    }
-}
-else
-{
-    if (telemetry_parse_line(
-        line,
-        &t.rpm,
-        &t.requested_rpm,
-        &t.iu,
-        &t.iv,
-        &t.iw,
-        &t.vu,
-        &t.vv,
-        &t.vw,
-        &t.state,
-        &t.enabled,
-        &t.faults))
-    {
-        last_telemetry = now;
-        t.connected = true;
-        dirty = true;
-    }
-}
-                    index = 0;
-                }
+            if (line[0] == 'I' && line[1] == ',')
+            {
+                printf("%s\n", line);
             }
+            else if (strncmp(line, "SLEEP:", 6) == 0)
+            {
+                //printf("Received sleep message: %s\n", line);
+                sleep_requested = true;
+            }
+            else if (strncmp(line, "TIME:", 5) == 0)
+            {
+                if (telemetry_parse_rtc(line)) { dirty = true; }
+            }
+            else if (telemetry_parse_line(line, &t.rpm, &t.requested_rpm,
+                                        &t.iu, &t.iv, &t.iw,
+                                        &t.state, &t.enabled, &t.faults))
+            {
+                last_telemetry = now;
+                t.connected = true;
+                dirty = true;
+            }   
+            index = 0;
+                            }
+                        }
             else if (index < LINE_BUFFER_SIZE - 1)
             {
                 line[index++] = (char)c;
@@ -512,9 +487,6 @@ else
                 t.iu,
                 t.iv,
                 t.iw,
-                t.vu,
-                t.vv,
-                t.vw,
                 t.state,
                 t.enabled,
                 rtc_valid,
